@@ -49,3 +49,22 @@ export type PluginMessage =
   | { type: "analysis-complete"; data: CoverageAnalysis }
   | { type: "error"; message: string }
   | { type: "settings-updated"; settings: AnalysisSettings };
+
+export interface RGB {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export interface ColorData {
+  type: "fill" | "stroke";
+  color: RGB;
+  index: number;
+}
+
+export interface VariableBinding {
+  variableName: string;
+  color: RGB;
+  type: "fill" | "stroke";
+  index: number;
+}

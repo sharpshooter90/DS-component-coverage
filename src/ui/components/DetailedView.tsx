@@ -13,16 +13,34 @@ interface DetailedViewProps {
     };
   };
   onSelectLayer: (layerId: string) => void;
+  onFixLayer?: (layer: {
+    id: string;
+    name: string;
+    type: string;
+    issues: string[];
+    path: string;
+  }) => void;
 }
 
 const DetailedView: React.FC<DetailedViewProps> = ({
   analysis,
   onSelectLayer,
+  onFixLayer,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState<string>("all");
 
   const { nonCompliantLayers } = analysis.details;
+
+  const hasColorIssue = (issues: string[]) => {
+    return issues.some(
+      (issue) =>
+        issue.toLowerCase().includes("color") ||
+        issue.toLowerCase().includes("fill") ||
+        issue.toLowerCase().includes("stroke") ||
+        issue.toLowerCase().includes("token")
+    );
+  };
 
   // Get unique types for filter
   const uniqueTypes = Array.from(
@@ -86,12 +104,22 @@ const DetailedView: React.FC<DetailedViewProps> = ({
                   <div className="layer-name">{layer.name}</div>
                   <div className="layer-meta">{layer.type}</div>
                 </div>
-                <button
-                  className="layer-select-btn"
-                  onClick={() => onSelectLayer(layer.id)}
-                >
-                  Select
-                </button>
+                <div className="layer-actions">
+                  <button
+                    className="layer-select-btn"
+                    onClick={() => onSelectLayer(layer.id)}
+                  >
+                    Select
+                  </button>
+                  {onFixLayer && hasColorIssue(layer.issues) && (
+                    <button
+                      className="layer-fix-btn"
+                      onClick={() => onFixLayer(layer)}
+                    >
+                      Fix
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="layer-path">{layer.path}</div>
               <div className="layer-issues">

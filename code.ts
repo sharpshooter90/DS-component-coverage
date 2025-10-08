@@ -76,11 +76,23 @@ figma.ui.onmessage = async (msg) => {
       settings: currentSettings,
     });
   } else if (msg.type === "select-layer") {
-    const node = figma.getNodeById(msg.layerId);
+    const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "id" in node) {
       figma.currentPage.selection = [node as SceneNode];
       figma.viewport.scrollAndZoomIntoView([node as SceneNode]);
     }
+  } else if (msg.type === "get-layer-colors") {
+    const node = await figma.getNodeByIdAsync(msg.layerId);
+    if (node && "fills" in node) {
+      const colors = extractColorsFromLayer(node as SceneNode);
+      figma.ui.postMessage({
+        type: "layer-colors",
+        colors,
+        layerId: msg.layerId,
+      });
+    }
+  } else if (msg.type === "apply-color-variables") {
+    await applyColorVariables(msg.layerId, msg.variableBindings);
   } else if (msg.type === "close") {
     figma.closePlugin();
   }
@@ -468,4 +480,125 @@ function calculateTokenCoverage(stats: any): number {
 function calculateStyleCoverage(stats: any): number {
   // Similar to token coverage but focusing on style usage
   return calculateTokenCoverage(stats);
+}
+
+// Color Variable Fix Functions
+
+interface ColorData {
+  type: "fill" | "stroke";
+  color: RGB;
+  index: number;
+}
+
+function extractColorsFromLayer(node: SceneNode): ColorData[] {
+  const colors: ColorData[] = [];
+
+  if ("fills" in node && node.fills !== figma.mixed) {
+    const fills = node.fills;
+    if (Array.isArray(fills)) {
+      fills.forEach((fill, index) => {
+        if (fill.type === "SOLID") {
+          colors.push({ type: "fill", color: fill.color, index });
+        }
+      });
+    }
+  }
+
+  if ("strokes" in node) {
+    const strokes = node.strokes;
+    if (Array.isArray(strokes)) {
+      strokes.forEach((stroke, index) => {
+        if (stroke.type === "SOLID") {
+          colors.push({ type: "stroke", color: stroke.color, index });
+        }
+      });
+    }
+  }
+
+  return colors;
+}
+
+async function applyColorVariables(
+  layerId: string,
+  variableBindings: any[]
+): Promise<void> {
+  const node = await figma.getNodeByIdAsync(layerId);
+  if (!node || !("fills" in node)) {
+    figma.ui.postMessage({
+      type: "error",
+      message: "Cannot apply variables to this layer",
+    });
+    return;
+  }
+
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+
+    for (const binding of variableBindings) {
+      // Check if variable already exists
+      const allVariables = await figma.variables.getLocalVariablesAsync();
+      const existingVariables = allVariables.filter(
+        (v) => v.name === binding.variableName
+      );
+
+      let variable: Variable;
+
+      if (existingVariables.length > 0) {
+        variable = existingVariables[0];
+      } else {
+        // Create new variable
+        variable = figma.variables.createVariable(
+          binding.variableName,
+          collection,
+          "COLOR"
+        );
+
+        // Set color value
+        variable.setValueForMode(modeId, binding.color);
+      }
+
+      // Bind to layer using the correct approach
+      if (binding.type === "fill" && "fills" in node) {
+        const fills = node.fills;
+        if (Array.isArray(fills) && fills[binding.index]) {
+          const updatedFills = [...fills];
+          updatedFills[binding.index] =
+            figma.variables.setBoundVariableForPaint(
+              fills[binding.index],
+              "color",
+              variable
+            );
+          (node as any).fills = updatedFills;
+        }
+      } else if (binding.type === "stroke" && "strokes" in node) {
+        const strokes = node.strokes;
+        if (Array.isArray(strokes) && strokes[binding.index]) {
+          const updatedStrokes = [...strokes];
+          updatedStrokes[binding.index] =
+            figma.variables.setBoundVariableForPaint(
+              strokes[binding.index],
+              "color",
+              variable
+            );
+          (node as any).strokes = updatedStrokes;
+        }
+      }
+    }
+
+    figma.ui.postMessage({ type: "fix-applied", layerId });
+    figma.notify("✅ Color variables applied successfully!");
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply variables: ${error}`,
+    });
+  }
 }

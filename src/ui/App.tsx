@@ -6,6 +6,7 @@ import DetailedView from "./components/DetailedView";
 import SettingsView from "./components/SettingsView";
 import ErrorMessage from "./components/ErrorMessage";
 import ProgressIndicator from "./components/ProgressIndicator";
+import FixWizard from "./components/FixWizard";
 
 type ViewType = "summary" | "detailed" | "settings";
 
@@ -56,6 +57,8 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [showFixWizard, setShowFixWizard] = useState(false);
+  const [selectedFixLayer, setSelectedFixLayer] = useState<any>(null);
 
   useEffect(() => {
     // Request current settings on mount
@@ -80,6 +83,11 @@ function App() {
         setIsAnalyzing(false);
       } else if (msg.type === "settings-updated") {
         setSettings(msg.settings);
+      } else if (msg.type === "fix-applied") {
+        setShowFixWizard(false);
+        setSelectedFixLayer(null);
+        // Re-run analysis to update results
+        handleAnalyze();
       }
     };
   }, []);
@@ -173,6 +181,10 @@ function App() {
               <DetailedView
                 analysis={analysis}
                 onSelectLayer={handleSelectLayer}
+                onFixLayer={(layer) => {
+                  setSelectedFixLayer(layer);
+                  setShowFixWizard(true);
+                }}
               />
             )}
             {view === "settings" && (
@@ -205,6 +217,16 @@ function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {showFixWizard && selectedFixLayer && (
+        <FixWizard
+          layer={selectedFixLayer}
+          onClose={() => {
+            setShowFixWizard(false);
+            setSelectedFixLayer(null);
+          }}
+        />
       )}
     </div>
   );
