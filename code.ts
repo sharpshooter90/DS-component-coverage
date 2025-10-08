@@ -93,6 +93,10 @@ figma.ui.onmessage = async (msg) => {
     }
   } else if (msg.type === "apply-color-variables") {
     await applyColorVariables(msg.layerId, msg.variableBindings);
+  } else if (msg.type === "apply-bulk-color-variables") {
+    await applyBulkColorVariables(msg.layerIds, msg.colorToVariableMap);
+  } else if (msg.type === "export-debug-data") {
+    exportDebugData();
   } else if (msg.type === "close") {
     figma.closePlugin();
   }
@@ -221,6 +225,89 @@ async function traverseNode(
   }
 }
 
+function extractRawProperties(node: SceneNode): any {
+  const props: any = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    visible: node.visible,
+    locked: node.locked,
+  };
+
+  // Extract fills
+  if ("fills" in node && node.fills !== figma.mixed) {
+    props.fills = Array.isArray(node.fills)
+      ? node.fills.map((fill: Paint) => ({
+          type: fill.type,
+          visible: fill.visible,
+          opacity: fill.opacity,
+          color: fill.type === "SOLID" ? fill.color : undefined,
+          boundVariables: (fill as any).boundVariables,
+        }))
+      : [];
+  }
+
+  // Extract strokes
+  if ("strokes" in node && Array.isArray(node.strokes)) {
+    props.strokes = node.strokes.map((stroke: Paint) => ({
+      type: stroke.type,
+      visible: stroke.visible,
+      opacity: stroke.opacity,
+      color: stroke.type === "SOLID" ? stroke.color : undefined,
+      boundVariables: (stroke as any).boundVariables,
+    }));
+  }
+
+  // Extract text properties
+  if (node.type === "TEXT") {
+    const textNode = node as TextNode;
+    props.fontSize = textNode.fontSize;
+    props.fontName = textNode.fontName;
+    props.textStyleId = textNode.textStyleId;
+    props.characters = textNode.characters.substring(0, 100); // First 100 chars
+  }
+
+  // Extract layout properties
+  if ("layoutMode" in node) {
+    props.layoutMode = (node as FrameNode).layoutMode;
+    props.paddingLeft = (node as FrameNode).paddingLeft;
+    props.paddingRight = (node as FrameNode).paddingRight;
+    props.paddingTop = (node as FrameNode).paddingTop;
+    props.paddingBottom = (node as FrameNode).paddingBottom;
+  }
+
+  // Extract corner radius
+  if ("cornerRadius" in node) {
+    props.cornerRadius = (node as any).cornerRadius;
+  }
+
+  // Extract effects
+  if ("effects" in node && node.effects) {
+    props.effects = node.effects.map((effect: Effect) => ({
+      type: effect.type,
+      visible: effect.visible,
+      radius: "radius" in effect ? effect.radius : undefined,
+      boundVariables:
+        "boundVariables" in effect ? effect.boundVariables : undefined,
+    }));
+  }
+
+  // Extract style IDs
+  if ("fillStyleId" in node) props.fillStyleId = (node as any).fillStyleId;
+  if ("strokeStyleId" in node)
+    props.strokeStyleId = (node as any).strokeStyleId;
+  if ("effectStyleId" in node)
+    props.effectStyleId = (node as any).effectStyleId;
+  if ("textStyleId" in node) props.textStyleId = (node as any).textStyleId;
+
+  // Extract bound variables
+  if ("boundVariables" in node && node.boundVariables) {
+    props.boundVariables = node.boundVariables;
+  }
+
+  return props;
+}
+
 async function analyzeLayer(
   node: SceneNode,
   stats: any,
@@ -236,10 +323,20 @@ async function analyzeLayer(
 
   const issues: string[] = [];
   let isCompliant = true;
+  const analysisDetails: any = {
+    componentCheck: null,
+    tokenChecks: [],
+    styleChecks: [],
+  };
 
   // Check 1: Component Coverage (Story 2)
   if (currentSettings.checkComponents) {
     const componentIssue = await checkComponentUsage(node);
+    analysisDetails.componentCheck = {
+      enabled: true,
+      issue: componentIssue,
+      passed: !componentIssue,
+    };
     if (componentIssue) {
       issues.push(componentIssue);
       isCompliant = false;
@@ -249,6 +346,10 @@ async function analyzeLayer(
   // Check 2: Token Coverage (Story 3)
   if (currentSettings.checkTokens) {
     const tokenIssues = checkTokenUsage(node);
+    analysisDetails.tokenChecks = tokenIssues.map((issue) => ({
+      issue,
+      category: "token",
+    }));
     if (tokenIssues.length > 0) {
       issues.push(...tokenIssues);
       isCompliant = false;
@@ -258,9 +359,25 @@ async function analyzeLayer(
   // Check 3: Style Coverage (Story 4)
   if (currentSettings.checkStyles) {
     const styleIssues = checkStyleUsage(node);
+    analysisDetails.styleChecks = styleIssues.map((issue) => ({
+      issue,
+      type: issue.includes("🔴")
+        ? "critical"
+        : issue.includes("⚠️")
+        ? "warning"
+        : "success",
+    }));
     if (styleIssues.length > 0) {
+      // Only mark as non-compliant if there are actual issues (🔴 or ⚠️)
+      const hasActualIssues = styleIssues.some(
+        (issue) => issue.includes("🔴") || issue.includes("⚠️")
+      );
+
       issues.push(...styleIssues);
-      isCompliant = false;
+
+      if (hasActualIssues) {
+        isCompliant = false;
+      }
     }
   }
 
@@ -268,12 +385,17 @@ async function analyzeLayer(
     stats.compliantLayers++;
     stats.byType[nodeType].compliant++;
   } else {
+    // Extract raw properties for detailed inspection
+    const rawProperties = extractRawProperties(node);
+
     stats.nonCompliantLayers.push({
       id: node.id,
       name: node.name,
       type: nodeType,
       issues,
       path: path.join(" > "),
+      rawProperties,
+      analysis: analysisDetails,
     });
   }
 
@@ -382,49 +504,186 @@ function checkTokenUsage(node: SceneNode): string[] {
 function checkStyleUsage(node: SceneNode): string[] {
   const issues: string[] = [];
 
-  // Skip if local styles are allowed
-  if (currentSettings.allowLocalStyles) {
-    return issues;
-  }
+  // Check fill styles with detailed analysis
+  if ("fills" in node && node.fills !== figma.mixed) {
+    const fills = node.fills as ReadonlyArray<Paint>;
+    if (fills.length > 0) {
+      const localFills = fills.filter(
+        (fill) => fill.type === "SOLID" && !fill.boundVariables?.color
+      );
+      const variableBoundFills = fills.filter(
+        (fill) => fill.type === "SOLID" && fill.boundVariables?.color
+      );
+      const nonSolidFills = fills.filter((fill) => fill.type !== "SOLID");
+      const sharedStyleFills = node.fillStyleId ? 1 : 0;
 
-  // Check fill style
-  if ("fillStyleId" in node && "fills" in node) {
-    if (
-      node.fills !== figma.mixed &&
-      (node.fills as ReadonlyArray<Paint>).length > 0
-    ) {
-      if (!node.fillStyleId) {
-        issues.push("Uses local fill style instead of shared style");
+      if (localFills.length > 0) {
+        issues.push(
+          `🔴 Uses ${localFills.length} local fill color${
+            localFills.length > 1 ? "s" : ""
+          } instead of design token${localFills.length > 1 ? "s" : ""}`
+        );
+      }
+
+      if (variableBoundFills.length > 0) {
+        issues.push(
+          `✅ ${variableBoundFills.length} fill${
+            variableBoundFills.length > 1 ? "s" : ""
+          } properly bound to variable${
+            variableBoundFills.length > 1 ? "s" : ""
+          }`
+        );
+      }
+
+      if (sharedStyleFills > 0) {
+        issues.push(`✅ Uses shared fill style`);
+      }
+
+      if (nonSolidFills.length > 0) {
+        issues.push(
+          `⚠️ ${nonSolidFills.length} non-solid fill${
+            nonSolidFills.length > 1 ? "s" : ""
+          } (gradient/image) - needs manual review`
+        );
       }
     }
   }
 
-  // Check stroke style
-  if ("strokeStyleId" in node && "strokes" in node) {
+  // Check stroke styles with detailed analysis
+  if ("strokes" in node && Array.isArray(node.strokes)) {
     const strokes = node.strokes;
-    if (Array.isArray(strokes) && strokes.length > 0) {
-      if (!node.strokeStyleId) {
-        issues.push("Uses local stroke style instead of shared style");
+    if (strokes.length > 0) {
+      const localStrokes = strokes.filter(
+        (stroke) => stroke.type === "SOLID" && !stroke.boundVariables?.color
+      );
+      const variableBoundStrokes = strokes.filter(
+        (stroke) => stroke.type === "SOLID" && stroke.boundVariables?.color
+      );
+      const nonSolidStrokes = strokes.filter(
+        (stroke) => stroke.type !== "SOLID"
+      );
+      const sharedStyleStrokes = node.strokeStyleId ? 1 : 0;
+
+      if (localStrokes.length > 0) {
+        issues.push(
+          `🔴 Uses ${localStrokes.length} local stroke color${
+            localStrokes.length > 1 ? "s" : ""
+          } instead of design token${localStrokes.length > 1 ? "s" : ""}`
+        );
+      }
+
+      if (variableBoundStrokes.length > 0) {
+        issues.push(
+          `✅ ${variableBoundStrokes.length} stroke${
+            variableBoundStrokes.length > 1 ? "s" : ""
+          } properly bound to variable${
+            variableBoundStrokes.length > 1 ? "s" : ""
+          }`
+        );
+      }
+
+      if (sharedStyleStrokes > 0) {
+        issues.push(`✅ Uses shared stroke style`);
+      }
+
+      if (nonSolidStrokes.length > 0) {
+        issues.push(
+          `⚠️ ${nonSolidStrokes.length} non-solid stroke${
+            nonSolidStrokes.length > 1 ? "s" : ""
+          } (gradient/image) - needs manual review`
+        );
       }
     }
   }
 
-  // Check text style
+  // Check text styles with detailed analysis
   if (node.type === "TEXT") {
     const textNode = node as TextNode;
     if (!textNode.textStyleId) {
-      issues.push("Uses local text style instead of shared style");
+      const fontFamily =
+        typeof textNode.fontName === "object"
+          ? textNode.fontName.family
+          : "Unknown";
+      const fontSize =
+        typeof textNode.fontSize === "number" ? textNode.fontSize : "Unknown";
+      issues.push(
+        `🔴 Uses local text style (${fontFamily}, ${fontSize}px) instead of shared text style`
+      );
+    } else {
+      issues.push(`✅ Uses shared text style`);
     }
   }
 
-  // Check effect style
-  if ("effectStyleId" in node && "effects" in node) {
+  // Check effect styles with detailed analysis
+  if ("effects" in node && node.effects && node.effects.length > 0) {
     const effects = node.effects;
-    if (Array.isArray(effects) && effects.length > 0) {
-      if (!node.effectStyleId) {
-        issues.push("Uses local effects instead of shared effect style");
-      }
+    const hasLocalEffects = effects.some(
+      (effect) =>
+        !effect.boundVariables ||
+        Object.keys(effect.boundVariables).length === 0
+    );
+    const hasVariableBoundEffects = effects.some(
+      (effect) =>
+        effect.boundVariables && Object.keys(effect.boundVariables).length > 0
+    );
+    const sharedStyleEffects = node.effectStyleId ? 1 : 0;
+
+    if (hasLocalEffects) {
+      issues.push(`🔴 Uses local effects instead of design tokens`);
     }
+
+    if (hasVariableBoundEffects) {
+      issues.push(`✅ Effects properly bound to variables`);
+    }
+
+    if (sharedStyleEffects > 0) {
+      issues.push(`✅ Uses shared effect style`);
+    }
+  }
+
+  // Check corner radius
+  if (
+    "cornerRadius" in node &&
+    typeof node.cornerRadius === "number" &&
+    node.cornerRadius > 0
+  ) {
+    if (!node.boundVariables || !("cornerRadius" in node.boundVariables)) {
+      issues.push(
+        `🔴 Uses local corner radius (${node.cornerRadius}px) instead of spacing token`
+      );
+    } else {
+      issues.push(`✅ Corner radius bound to variable`);
+    }
+  }
+
+  // Check padding/margin (for auto-layout)
+  if ("paddingLeft" in node) {
+    const paddingProps = [
+      "paddingLeft",
+      "paddingRight",
+      "paddingTop",
+      "paddingBottom",
+    ];
+    const localPaddingProps = paddingProps.filter((prop) => {
+      const value = (node as any)[prop];
+      const hasBoundVariable =
+        node.boundVariables && prop in node.boundVariables;
+      return value !== 0 && !hasBoundVariable;
+    });
+
+    if (localPaddingProps.length > 0) {
+      issues.push(`🔴 Uses local padding values instead of spacing tokens`);
+    } else if (
+      node.boundVariables &&
+      paddingProps.some((prop) => prop in node.boundVariables!)
+    ) {
+      issues.push(`✅ Padding bound to variables`);
+    }
+  }
+
+  // Skip if local styles are allowed and no issues found
+  if (currentSettings.allowLocalStyles && issues.length === 0) {
+    return issues;
   }
 
   return issues;
@@ -601,4 +860,349 @@ async function applyColorVariables(
       message: `Failed to apply variables: ${error}`,
     });
   }
+}
+
+async function applyBulkColorVariables(
+  layerIds: string[],
+  colorToVariableMap: Record<string, string>
+): Promise<void> {
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+
+    // Create all variables first
+    const variableCache = new Map<string, Variable>();
+    const existingVariables = await figma.variables.getLocalVariablesAsync();
+
+    for (const [colorKey, variableName] of Object.entries(colorToVariableMap)) {
+      // Parse color from key
+      const [r, g, b] = colorKey.split("-").map(Number);
+      const color: RGB = { r, g, b };
+
+      // Check if variable exists
+      const existing = existingVariables.find((v) => v.name === variableName);
+
+      let variable: Variable;
+      if (existing) {
+        variable = existing;
+      } else {
+        variable = figma.variables.createVariable(
+          variableName,
+          collection,
+          "COLOR"
+        );
+        variable.setValueForMode(modeId, color);
+      }
+
+      variableCache.set(colorKey, variable);
+    }
+
+    // Apply variables to all layers
+    for (const layerId of layerIds) {
+      const node = await figma.getNodeByIdAsync(layerId);
+      if (!node || !("fills" in node)) continue;
+
+      // Update fills
+      if ("fills" in node && Array.isArray(node.fills)) {
+        const fills = node.fills;
+        const updatedFills = fills.map((fill) => {
+          if (fill.type === "SOLID") {
+            const key = `${fill.color.r}-${fill.color.g}-${fill.color.b}`;
+            const variable = variableCache.get(key);
+            if (variable) {
+              return figma.variables.setBoundVariableForPaint(
+                fill,
+                "color",
+                variable
+              );
+            }
+          }
+          return fill;
+        });
+        (node as any).fills = updatedFills;
+      }
+
+      // Update strokes
+      if ("strokes" in node && Array.isArray(node.strokes)) {
+        const strokes = node.strokes;
+        const updatedStrokes = strokes.map((stroke) => {
+          if (stroke.type === "SOLID") {
+            const key = `${stroke.color.r}-${stroke.color.g}-${stroke.color.b}`;
+            const variable = variableCache.get(key);
+            if (variable) {
+              return figma.variables.setBoundVariableForPaint(
+                stroke,
+                "color",
+                variable
+              );
+            }
+          }
+          return stroke;
+        });
+        (node as any).strokes = updatedStrokes;
+      }
+    }
+
+    figma.ui.postMessage({ type: "fix-applied", layerId: "bulk" });
+    figma.notify(`✅ Color variables applied to ${layerIds.length} layers!`);
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply bulk variables: ${error}`,
+    });
+  }
+}
+
+async function exportDebugData() {
+  try {
+    const selection = figma.currentPage.selection;
+
+    if (selection.length === 0) {
+      figma.ui.postMessage({
+        type: "error",
+        message: "Please select frames to analyze first",
+      });
+      return;
+    }
+
+    // Get Figma environment data using async APIs
+    const [
+      localVariables,
+      localVariableCollections,
+      localTextStyles,
+      localPaintStyles,
+      localEffectStyles,
+    ] = await Promise.all([
+      figma.variables.getLocalVariablesAsync(),
+      figma.variables.getLocalVariableCollectionsAsync(),
+      figma.getLocalTextStylesAsync(),
+      figma.getLocalPaintStylesAsync(),
+      figma.getLocalEffectStylesAsync(),
+    ]);
+
+    const debugData = {
+      timestamp: new Date().toISOString(),
+      pluginVersion: "1.0.0",
+      currentSettings,
+      selection: selection.map((node) => ({
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        visible: node.visible,
+        locked: node.locked,
+        parent: node.parent
+          ? { id: node.parent.id, name: node.parent.name }
+          : null,
+      })),
+      analysisResults: [] as any[],
+      figmaEnvironment: {
+        pageName: figma.currentPage.name,
+        documentName: figma.root.name,
+        localVariables: localVariables.length,
+        localVariableCollections: localVariableCollections.length,
+        localStyles:
+          localTextStyles.length +
+          localPaintStyles.length +
+          localEffectStyles.length,
+        localComponents: 0, // figma.getLocalComponents() not available in current API
+      },
+    };
+
+    // Analyze each selected frame
+    const analysisPromises = selection.map(async (node) => {
+      if (
+        node.type === "FRAME" ||
+        node.type === "COMPONENT" ||
+        node.type === "INSTANCE"
+      ) {
+        return await analyzeFrameForDebug(
+          node as FrameNode | ComponentNode | InstanceNode
+        );
+      }
+      return null;
+    });
+
+    const analysisResults = await Promise.all(analysisPromises);
+    debugData.analysisResults = analysisResults.filter(
+      (result) => result !== null
+    );
+
+    // Send debug data to UI
+    figma.ui.postMessage({
+      type: "debug-data-exported",
+      debugData,
+    });
+
+    figma.notify("✅ Debug data exported to UI");
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to export debug data: ${error}`,
+    });
+  }
+}
+
+async function analyzeFrameForDebug(
+  node: FrameNode | ComponentNode | InstanceNode
+) {
+  const frameData = {
+    frameId: node.id,
+    frameName: node.name,
+    frameType: node.type,
+    frameProperties: {
+      width: node.width,
+      height: node.height,
+      fills: node.fills,
+      strokes: node.strokes,
+      effects: node.effects,
+      cornerRadius: node.cornerRadius,
+      fillStyleId: node.fillStyleId,
+      strokeStyleId: node.strokeStyleId,
+      effectStyleId: node.effectStyleId,
+      boundVariables: node.boundVariables,
+      layoutMode: "layoutMode" in node ? node.layoutMode : null,
+      paddingLeft: "paddingLeft" in node ? node.paddingLeft : null,
+      paddingRight: "paddingRight" in node ? node.paddingRight : null,
+      paddingTop: "paddingTop" in node ? node.paddingTop : null,
+      paddingBottom: "paddingBottom" in node ? node.paddingBottom : null,
+      itemSpacing: "itemSpacing" in node ? node.itemSpacing : null,
+    },
+    layers: [] as any[],
+    summary: {
+      totalLayers: 0,
+      compliantLayers: 0,
+      nonCompliantLayers: 0,
+      issuesByType: {} as any,
+      issuesByCategory: {
+        component: 0,
+        token: 0,
+        style: 0,
+      },
+    },
+  };
+
+  // Traverse and analyze all layers
+  const stats = {
+    totalLayers: 0,
+    compliantLayers: 0,
+    nonCompliantLayers: 0,
+    byType: {} as any,
+  };
+
+  await traverseNodeForDebug(node, stats, [node.name], frameData.layers);
+
+  frameData.summary.totalLayers = stats.totalLayers;
+  frameData.summary.compliantLayers = stats.compliantLayers;
+  frameData.summary.nonCompliantLayers = stats.nonCompliantLayers;
+
+  return frameData;
+}
+
+async function traverseNodeForDebug(
+  node: BaseNode,
+  stats: any,
+  path: string[],
+  layersArray: any[]
+) {
+  stats.totalLayers++;
+
+  if ("type" in node && node.type !== "PAGE") {
+    const layerDebugData = await analyzeLayerForDebug(node as SceneNode, path);
+    layersArray.push(layerDebugData);
+
+    if (layerDebugData.isCompliant) {
+      stats.compliantLayers++;
+    } else {
+      stats.nonCompliantLayers++;
+    }
+  }
+
+  // Traverse children
+  if ("children" in node) {
+    const children = node.children;
+    for (let i = 0; i < children.length; i++) {
+      const child = children[i];
+      const childPath = [...path, child.name];
+      await traverseNodeForDebug(child, stats, childPath, layersArray);
+    }
+  }
+}
+
+async function analyzeLayerForDebug(node: SceneNode, path: string[]) {
+  const layerData = {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    path: path.join(" > "),
+    isCompliant: true,
+    issues: [] as string[],
+    rawProperties: {
+      fills: "fills" in node ? node.fills : null,
+      strokes: "strokes" in node ? node.strokes : null,
+      effects: "effects" in node ? node.effects : null,
+      cornerRadius: "cornerRadius" in node ? node.cornerRadius : null,
+      fillStyleId: "fillStyleId" in node ? node.fillStyleId : null,
+      strokeStyleId: "strokeStyleId" in node ? node.strokeStyleId : null,
+      effectStyleId: "effectStyleId" in node ? node.effectStyleId : null,
+      textStyleId: "textStyleId" in node ? node.textStyleId : null,
+      fontName: "fontName" in node ? node.fontName : null,
+      fontSize: "fontSize" in node ? node.fontSize : null,
+      boundVariables: node.boundVariables,
+      layoutMode: "layoutMode" in node ? node.layoutMode : null,
+      paddingLeft: "paddingLeft" in node ? node.paddingLeft : null,
+      paddingRight: "paddingRight" in node ? node.paddingRight : null,
+      paddingTop: "paddingTop" in node ? node.paddingTop : null,
+      paddingBottom: "paddingBottom" in node ? node.paddingBottom : null,
+      itemSpacing: "itemSpacing" in node ? node.itemSpacing : null,
+    },
+    analysis: {
+      componentCheck: null as string | null,
+      tokenCheck: [] as string[],
+      styleCheck: [] as string[],
+    },
+  };
+
+  // Check 1: Component Coverage
+  if (currentSettings.checkComponents) {
+    layerData.analysis.componentCheck = await checkComponentUsage(node);
+    if (layerData.analysis.componentCheck) {
+      layerData.issues.push(layerData.analysis.componentCheck);
+      layerData.isCompliant = false;
+    }
+  }
+
+  // Check 2: Token Coverage
+  if (currentSettings.checkTokens) {
+    layerData.analysis.tokenCheck = checkTokenUsage(node);
+    if (layerData.analysis.tokenCheck.length > 0) {
+      layerData.issues.push(...layerData.analysis.tokenCheck);
+      layerData.isCompliant = false;
+    }
+  }
+
+  // Check 3: Style Coverage
+  if (currentSettings.checkStyles) {
+    layerData.analysis.styleCheck = checkStyleUsage(node);
+    if (layerData.analysis.styleCheck.length > 0) {
+      // Only mark as non-compliant if there are actual issues (🔴 or ⚠️)
+      const hasActualIssues = layerData.analysis.styleCheck.some(
+        (issue) => issue.includes("🔴") || issue.includes("⚠️")
+      );
+
+      layerData.issues.push(...layerData.analysis.styleCheck);
+
+      if (hasActualIssues) {
+        layerData.isCompliant = false;
+      }
+    }
+  }
+
+  return layerData;
 }

@@ -7,6 +7,7 @@ import SettingsView from "./components/SettingsView";
 import ErrorMessage from "./components/ErrorMessage";
 import ProgressIndicator from "./components/ProgressIndicator";
 import FixWizard from "./components/FixWizard";
+import DebugView from "./components/DebugView";
 
 type ViewType = "summary" | "detailed" | "settings";
 
@@ -59,6 +60,8 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [showFixWizard, setShowFixWizard] = useState(false);
   const [selectedFixLayer, setSelectedFixLayer] = useState<any>(null);
+  const [showDebugView, setShowDebugView] = useState(false);
+  const [debugData, setDebugData] = useState<any>(null);
 
   useEffect(() => {
     // Request current settings on mount
@@ -88,6 +91,9 @@ function App() {
         setSelectedFixLayer(null);
         // Re-run analysis to update results
         handleAnalyze();
+      } else if (msg.type === "debug-data-exported") {
+        setDebugData(msg.debugData);
+        setShowDebugView(true);
       }
     };
   }, []);
@@ -121,6 +127,13 @@ function App() {
   const handleSelectLayer = (layerId: string) => {
     window.parent.postMessage(
       { pluginMessage: { type: "select-layer", layerId } },
+      "*"
+    );
+  };
+
+  const handleExportDebug = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "export-debug-data" } },
       "*"
     );
   };
@@ -185,6 +198,7 @@ function App() {
                   setSelectedFixLayer(layer);
                   setShowFixWizard(true);
                 }}
+                onExportDebug={handleExportDebug}
               />
             )}
             {view === "settings" && (
@@ -221,10 +235,24 @@ function App() {
 
       {showFixWizard && selectedFixLayer && (
         <FixWizard
-          layer={selectedFixLayer}
+          layers={
+            Array.isArray(selectedFixLayer)
+              ? selectedFixLayer
+              : [selectedFixLayer]
+          }
           onClose={() => {
             setShowFixWizard(false);
             setSelectedFixLayer(null);
+          }}
+        />
+      )}
+
+      {showDebugView && debugData && (
+        <DebugView
+          debugData={debugData}
+          onClose={() => {
+            setShowDebugView(false);
+            setDebugData(null);
           }}
         />
       )}
