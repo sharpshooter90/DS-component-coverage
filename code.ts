@@ -1350,23 +1350,29 @@ function extractEffectsFromLayer(node: SceneNode): any[] {
 
   if ("effects" in node && node.effects && Array.isArray(node.effects)) {
     node.effects.forEach((effect, index) => {
-      if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
-        effects.push({
-          type: effect.type,
-          radius: (effect as any).radius || 0,
-          index,
-          property: "effects",
-        });
-      } else if (
-        effect.type === "LAYER_BLUR" ||
-        effect.type === "BACKGROUND_BLUR"
-      ) {
-        effects.push({
-          type: effect.type,
-          radius: (effect as any).radius || 0,
-          index,
-          property: "effects",
-        });
+      // Only extract effects that are NOT bound to variables (these are the ones we want to fix)
+      const isBoundToVariable =
+        effect.boundVariables && Object.keys(effect.boundVariables).length > 0;
+
+      if (!isBoundToVariable) {
+        if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+          effects.push({
+            type: effect.type,
+            radius: (effect as any).radius || 0,
+            index,
+            property: "effects",
+          });
+        } else if (
+          effect.type === "LAYER_BLUR" ||
+          effect.type === "BACKGROUND_BLUR"
+        ) {
+          effects.push({
+            type: effect.type,
+            radius: (effect as any).radius || 0,
+            index,
+            property: "effects",
+          });
+        }
       }
     });
   }
@@ -1606,35 +1612,30 @@ async function applyEffectVariables(
       // Set variable value
       variable.setValueForMode(modeId, binding.radius);
 
-      // Bind the effect property
+      // Bind the effect property using setBoundVariableForEffect
       if ("effects" in node && node.effects && node.effects[binding.index]) {
         const effect = node.effects[binding.index];
 
-        // Try different property path formats for effect binding
-        const propertyPaths = [
-          `effects[${binding.index}].radius`,
-          `effects.${binding.index}.radius`,
-          `effects[${binding.index}].blur`,
-          `effects.${binding.index}.blur`,
-        ];
+        try {
+          // Use the correct Figma API method for binding variables to effects
+          const boundEffect = figma.variables.setBoundVariableForEffect(
+            effect,
+            "radius",
+            variable
+          );
 
-        let bound = false;
-        for (const path of propertyPaths) {
-          try {
-            (node as any).setBoundVariable(path, variable);
-            console.log(
-              `Successfully bound effect variable using path: ${path}`
-            );
-            bound = true;
-            break;
-          } catch (error) {
-            console.log(`Failed to bind using path ${path}:`, error);
-          }
-        }
+          // Update the effect in the node's effects array
+          const updatedEffects = [...node.effects];
+          updatedEffects[binding.index] = boundEffect;
+          (node as any).effects = updatedEffects;
 
-        if (!bound) {
-          console.warn(
-            `Failed to bind effect variable for ${effect.type} at index ${binding.index}`
+          console.log(
+            `Successfully bound effect variable to ${effect.type} at index ${binding.index}`
+          );
+        } catch (error) {
+          console.error(
+            `Failed to bind effect variable for ${effect.type} at index ${binding.index}:`,
+            error
           );
         }
       }
@@ -1717,30 +1718,27 @@ async function applyBulkEffectVariables(
         if (effectIndex >= 0) {
           const effect = node.effects[effectIndex];
 
-          // Try different property path formats for effect binding
-          const propertyPaths = [
-            `effects[${effectIndex}].radius`,
-            `effects.${effectIndex}.radius`,
-            `effects[${effectIndex}].blur`,
-            `effects.${effectIndex}.blur`,
-          ];
+          try {
+            // Use the correct Figma API method for binding variables to effects
+            const boundEffect = figma.variables.setBoundVariableForEffect(
+              effect,
+              "radius",
+              variable
+            );
 
-          let bound = false;
-          for (const path of propertyPaths) {
-            try {
-              (node as any).setBoundVariable(path, variable);
-              console.log(
-                `Successfully bound effect variable using path: ${path}`
-              );
-              bound = true;
-              break;
-            } catch (error) {
-              console.log(`Failed to bind using path ${path}:`, error);
-            }
-          }
+            // Update the effect in the node's effects array
+            const updatedEffects = [...node.effects];
+            updatedEffects[effectIndex] = boundEffect;
+            (node as any).effects = updatedEffects;
 
-          if (!bound) {
-            console.warn(`Failed to bind effect ${type} on layer ${layerId}`);
+            console.log(
+              `Successfully bound effect variable to ${type} at index ${effectIndex} on layer ${layerId}`
+            );
+          } catch (error) {
+            console.error(
+              `Failed to bind effect ${type} on layer ${layerId}:`,
+              error
+            );
           }
         }
       }

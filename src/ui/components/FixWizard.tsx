@@ -106,7 +106,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       } else if (
         issue.includes("🔴") &&
         issue.includes("effect") &&
-        (issue.includes("shadow") || issue.includes("blur")) // Only shadow/blur effects
+        issue.includes("local effects instead of design tokens") // Match the exact effect issue message
       ) {
         categorizedIssues.push({
           type: "effect",
@@ -185,7 +185,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         (issue) =>
           issue.includes("🔴") &&
           issue.includes("effect") &&
-          (issue.includes("shadow") || issue.includes("blur"))
+          issue.includes("local effects instead of design tokens")
       );
 
       // Add to loading set if we're requesting any data for this layer
@@ -404,9 +404,9 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
     // Handle grouped padding types with better naming
     let typeName = spacing.type;
     if (spacing.type === "paddingHorizontal") {
-      typeName = "padding-x"; // More concise for horizontal padding
+      typeName = "paddingHorizontal"; // Use original type name for consistency
     } else if (spacing.type === "paddingVertical") {
-      typeName = "padding-y"; // More concise for vertical padding
+      typeName = "paddingVertical"; // Use original type name for consistency
     }
 
     if (isBulkMode) {
