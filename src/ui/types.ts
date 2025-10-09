@@ -56,6 +56,13 @@ export interface RGB {
   b: number;
 }
 
+export interface RGBA {
+  r: number;
+  g: number;
+  b: number;
+  a: number;
+}
+
 export interface ColorData {
   type: "fill" | "stroke";
   color: RGB;
@@ -101,16 +108,31 @@ export interface SpacingVariableBinding {
 }
 
 export interface EffectData {
-  type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
-  radius: number;
+  key: string;
   index: number;
   property: string;
+  effect: EffectSnapshot;
+  effects: EffectSnapshot[];
 }
 
-export interface EffectVariableBinding {
-  variableName: string;
-  radius: number;
+export interface EffectSnapshot {
   type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+  radius?: number;
+  spread?: number;
+  offset?: { x: number; y: number };
+  color?: RGBA | null;
+  blendMode?: string | null;
+  visible: boolean;
+  showBehindNode?: boolean;
+}
+
+export interface EffectStyleBinding {
+  styleName: string;
+  key: string;
   index: number;
-  property: string;
+}
+
+export interface BulkEffectStyleAssignment {
+  key: string;
+  styleName: string;
 }

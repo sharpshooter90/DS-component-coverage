@@ -6,7 +6,8 @@ import {
   SpacingData,
   SpacingVariableBinding,
   EffectData,
-  EffectVariableBinding,
+  EffectStyleBinding,
+  BulkEffectStyleAssignment,
 } from "../types";
 
 interface FixWizardProps {
@@ -59,9 +60,9 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
     new Map()
   );
   const [uniqueEffects, setUniqueEffects] = useState<
-    Array<{ effect: EffectData; sources: string[] }>
+    Array<{ data: EffectData; sources: string[] }>
   >([]);
-  const [effectVariableNames, setEffectVariableNames] = useState<
+  const [effectStyleNames, setEffectStyleNames] = useState<
     Record<number, string>
   >({});
 
@@ -106,7 +107,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       } else if (
         issue.includes("🔴") &&
         issue.includes("effect") &&
-        issue.includes("local effects instead of design tokens") // Match the exact effect issue message
+        issue.includes("local effects instead of design tokens or styles") // Match the exact effect issue message
       ) {
         categorizedIssues.push({
           type: "effect",
@@ -148,7 +149,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       case "spacing":
         return "Bind padding, margin, and corner radius to spacing tokens";
       case "effect":
-        return "Apply effect styles and variables";
+        return "Promote local effects into shared effect styles";
       default:
         return "Fix style issues";
     }
@@ -185,7 +186,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         (issue) =>
           issue.includes("🔴") &&
           issue.includes("effect") &&
-          issue.includes("local effects instead of design tokens")
+          issue.includes("local effects instead of design tokens or styles")
       );
 
       // Add to loading set if we're requesting any data for this layer
@@ -314,13 +315,13 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
     if (allEffects.size > 0) {
       const effectMap = new Map<
         string,
-        { effect: EffectData; sources: string[] }
+        { data: EffectData; sources: string[] }
       >();
 
       allEffects.forEach((effectsArray, layerId) => {
         const layerName = layers.find((l) => l.id === layerId)?.name || layerId;
         effectsArray.forEach((effectData) => {
-          const key = `${effectData.type}-${effectData.radius}`;
+          const key = effectData.key;
           if (effectMap.has(key)) {
             const existing = effectMap.get(key)!;
             if (!existing.sources.includes(layerName)) {
@@ -328,7 +329,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
             }
           } else {
             effectMap.set(key, {
-              effect: effectData,
+              data: effectData,
               sources: [layerName],
             });
           }
@@ -420,26 +421,56 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
     return applyCasing(base, namingConfig.casing);
   };
 
-  const generateEffectVariableName = (
+  const generateEffectStyleName = (
     effect: EffectData,
     index: number,
     sources?: string[]
   ): string => {
     let base: string;
 
+    const effectLabel = effect.effect.type.toLowerCase().replace("_", "-");
+    const radiusLabel =
+      typeof effect.effect.radius === "number"
+        ? effect.effect.radius
+        : "stack";
+
     if (isBulkMode) {
-      // For bulk mode, use type and radius
-      base = `effect ${effect.type.toLowerCase().replace("_", "-")} ${
-        effect.radius
-      }`;
+      // For bulk mode, use effect characteristics
+      base = `effect ${effectLabel} ${radiusLabel}`;
     } else {
       // For single layer, include layer name
-      base = `effect ${layers[0].name} ${effect.type
-        .toLowerCase()
-        .replace("_", "-")} ${effect.radius}`;
+      base = `effect ${layers[0].name} ${effectLabel} ${radiusLabel}`;
     }
 
     return applyCasing(base, namingConfig.casing);
+  };
+
+  const formatMetric = (value: number): string => {
+    const rounded = Number(value.toFixed(2));
+    return Number.isInteger(rounded)
+      ? rounded.toString()
+      : rounded.toFixed(2);
+  };
+
+  const getEffectMetrics = (effect: EffectData["effect"]) => {
+    const radius =
+      typeof effect.radius === "number" ? effect.radius : 0;
+    const spread =
+      typeof effect.spread === "number" ? effect.spread : 0;
+    const offsetX =
+      effect.offset && typeof effect.offset.x === "number"
+        ? effect.offset.x
+        : 0;
+    const offsetY =
+      effect.offset && typeof effect.offset.y === "number"
+        ? effect.offset.y
+        : 0;
+    return {
+      radius,
+      spread,
+      offsetX,
+      offsetY,
+    };
   };
 
   const handleApply = () => {
@@ -447,7 +478,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       // Bulk mode: Apply variables to all layers
       const colorToVariableMap = new Map<string, string>();
       const spacingToVariableMap = new Map<string, string>();
-      const effectToVariableMap = new Map<string, string>();
+      const effectAssignments: BulkEffectStyleAssignment[] = [];
 
       // Handle colors
       if (selectedIssueTypes.has("color")) {
@@ -478,15 +509,17 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       // Handle effects
       if (selectedIssueTypes.has("effect")) {
         uniqueEffects.forEach((effectData, idx) => {
-          const key = `${effectData.effect.type}-${effectData.effect.radius}`;
-          const varName =
-            effectVariableNames[idx] ||
-            generateEffectVariableName(
-              effectData.effect,
+          const styleName =
+            effectStyleNames[idx] ||
+            generateEffectStyleName(
+              effectData.data,
               idx,
               effectData.sources
             );
-          effectToVariableMap.set(key, varName);
+          effectAssignments.push({
+            key: effectData.data.key,
+            styleName,
+          });
         });
       }
 
@@ -517,13 +550,13 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         );
       }
 
-      if (effectToVariableMap.size > 0) {
+      if (effectAssignments.length > 0) {
         window.parent.postMessage(
           {
             pluginMessage: {
-              type: "apply-bulk-effect-variables",
+              type: "apply-bulk-effect-styles",
               layerIds: layers.map((l) => l.id),
-              effectToVariableMap: Object.fromEntries(effectToVariableMap),
+              effectAssignments,
             },
           },
           "*"
@@ -586,24 +619,22 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
 
       // Apply effects
       if (selectedIssueTypes.has("effect") && layerEffects.length > 0) {
-        const effectBindings: EffectVariableBinding[] = layerEffects.map(
+        const effectBindings: EffectStyleBinding[] = layerEffects.map(
           (effectData, idx) => ({
-            variableName:
-              effectVariableNames[idx] ||
-              generateEffectVariableName(effectData, idx),
-            radius: effectData.radius,
-            type: effectData.type,
+            styleName:
+              effectStyleNames[idx] ||
+              generateEffectStyleName(effectData, idx),
+            key: effectData.key,
             index: effectData.index,
-            property: effectData.property,
           })
         );
 
         window.parent.postMessage(
           {
             pluginMessage: {
-              type: "apply-effect-variables",
+              type: "apply-effect-styles",
               layerId: layers[0].id,
-              variableBindings: effectBindings,
+              styleBindings: effectBindings,
             },
           },
           "*"
@@ -977,40 +1008,51 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
                         {uniqueEffects.length > 1 ? "s" : ""} across{" "}
                         {layers.length} layers
                       </div>
-                      {uniqueEffects.map((effectData, idx) => (
-                        <div key={idx} className="variable-mapping bulk">
-                          <div className="effect-preview">
-                            <span className="effect-value">
-                              {effectData.effect.radius}px
-                            </span>
-                            <span className="effect-type">
-                              {effectData.effect.type.replace("_", " ")}
-                            </span>
-                          </div>
-                          <div className="variable-details">
-                            <input
-                              className="filter-input"
-                              value={
-                                effectVariableNames[idx] ||
-                                generateEffectVariableName(
-                                  effectData.effect,
-                                  idx,
-                                  effectData.sources
-                                )
-                              }
-                              onChange={(e) =>
-                                setEffectVariableNames({
-                                  ...effectVariableNames,
-                                  [idx]: e.target.value,
-                                })
-                              }
-                            />
-                            <div className="effect-sources">
-                              Used in: {effectData.sources.join(", ")}
+                      {uniqueEffects.map((effectData, idx) => {
+                        const metrics = getEffectMetrics(effectData.data.effect);
+                        return (
+                          <div key={idx} className="variable-mapping bulk">
+                            <div className="effect-preview">
+                              <span className="effect-value">
+                                {formatMetric(metrics.radius)}px
+                              </span>
+                              <span className="effect-type">
+                                {effectData.data.effect.type.replace("_", " ")}
+                              </span>
+                              <span className="effect-metrics">
+                                Offset {formatMetric(metrics.offsetX)},{' '}
+                                {formatMetric(metrics.offsetY)} • Blur{" "}
+                                {formatMetric(metrics.radius)}px
+                                {metrics.spread !== 0
+                                  ? ` • Spread ${formatMetric(metrics.spread)}px`
+                                  : ""}
+                              </span>
+                            </div>
+                            <div className="variable-details">
+                              <input
+                                className="filter-input"
+                                value={
+                                  effectStyleNames[idx] ||
+                                  generateEffectStyleName(
+                                    effectData.data,
+                                    idx,
+                                    effectData.sources
+                                  )
+                                }
+                                onChange={(e) =>
+                                  setEffectStyleNames({
+                                    ...effectStyleNames,
+                                    [idx]: e.target.value,
+                                  })
+                                }
+                              />
+                              <div className="effect-sources">
+                                Used in: {effectData.sources.join(", ")}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </>
                   )
                 ) : allEffects.get(layers[0].id)?.length === 0 ? (
@@ -1018,31 +1060,42 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
                     No fixable effects found on this layer
                   </div>
                 ) : (
-                  allEffects.get(layers[0].id)?.map((effectData, idx) => (
-                    <div key={idx} className="variable-mapping">
-                      <div className="effect-preview">
-                        <span className="effect-value">
-                          {effectData.radius}px
-                        </span>
-                        <span className="effect-type">
-                          {effectData.type.replace("_", " ")}
-                        </span>
+                  allEffects.get(layers[0].id)?.map((effectData, idx) => {
+                    const metrics = getEffectMetrics(effectData.effect);
+                    return (
+                      <div key={idx} className="variable-mapping">
+                        <div className="effect-preview">
+                          <span className="effect-value">
+                            {formatMetric(metrics.radius)}px
+                          </span>
+                          <span className="effect-type">
+                            {effectData.effect.type.replace("_", " ")}
+                          </span>
+                          <span className="effect-metrics">
+                            Offset {formatMetric(metrics.offsetX)},{" "}
+                            {formatMetric(metrics.offsetY)} • Blur{" "}
+                            {formatMetric(metrics.radius)}px
+                            {metrics.spread !== 0
+                              ? ` • Spread ${formatMetric(metrics.spread)}px`
+                              : ""}
+                          </span>
+                        </div>
+                        <input
+                          className="filter-input"
+                          value={
+                            effectStyleNames[idx] ||
+                            generateEffectStyleName(effectData, idx)
+                          }
+                          onChange={(e) =>
+                            setEffectStyleNames({
+                              ...effectStyleNames,
+                              [idx]: e.target.value,
+                            })
+                          }
+                        />
                       </div>
-                      <input
-                        className="filter-input"
-                        value={
-                          effectVariableNames[idx] ||
-                          generateEffectVariableName(effectData, idx)
-                        }
-                        onChange={(e) =>
-                          setEffectVariableNames({
-                            ...effectVariableNames,
-                            [idx]: e.target.value,
-                          })
-                        }
-                      />
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </>
             )}

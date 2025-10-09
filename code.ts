@@ -61,17 +61,300 @@ let currentSettings: AnalysisSettings = { ...defaultSettings };
 
 figma.showUI(__html__, { width: 480, height: 720 });
 
+function serializeSymbol(value: symbol): string {
+  if (value === figma.mixed) {
+    return "figma.mixed";
+  }
+  const symbolString = value.toString();
+  const match = /^Symbol\((.*)\)$/.exec(symbolString);
+  if (match && match[1] !== undefined && match[1].length > 0) {
+    return `Symbol(${match[1]})`;
+  }
+  return symbolString;
+}
+
+function sanitizeForUI(
+  value: any,
+  seen: WeakMap<object, any> = new WeakMap()
+): any {
+  if (typeof value === "symbol") {
+    return serializeSymbol(value);
+  }
+
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (typeof value === "function") {
+    return `[Function ${value.name || "anonymous"}]`;
+  }
+
+  if (typeof value !== "object") {
+    return value;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return Array.from(value as any);
+  }
+
+  if (value instanceof Map) {
+    const mapResult: Record<string, any> = {};
+    value.forEach((mapValue, mapKey) => {
+      mapResult[String(mapKey)] = sanitizeForUI(mapValue, seen);
+    });
+    return mapResult;
+  }
+
+  if (value instanceof Set) {
+    const setResult: any[] = [];
+    value.forEach((setValue) => {
+      setResult.push(sanitizeForUI(setValue, seen));
+    });
+    return setResult;
+  }
+
+  if (seen.has(value)) {
+    return seen.get(value);
+  }
+
+  if (Array.isArray(value)) {
+    const arr: any[] = [];
+    seen.set(value, arr);
+    value.forEach((item) => {
+      arr.push(sanitizeForUI(item, seen));
+    });
+    return arr;
+  }
+
+  const output: Record<string, any> = {};
+  seen.set(value, output);
+
+  Reflect.ownKeys(value).forEach((key) => {
+    const rawValue = (value as any)[key as any];
+    const sanitizedKey =
+      typeof key === "symbol"
+        ? `[${serializeSymbol(key as symbol)}]`
+        : (key as string);
+    output[sanitizedKey] = sanitizeForUI(rawValue, seen);
+  });
+
+  return output;
+}
+
+function postMessageToUI(message: any) {
+  figma.ui.postMessage(sanitizeForUI(message));
+}
+
+type EffectStyleCapableNode = SceneNode & {
+  effectStyleId: string;
+  effects: ReadonlyArray<Effect>;
+  setEffectStyleIdAsync?: (styleId: string) => Promise<void>;
+};
+
+function nodeSupportsEffectStyles(
+  node: SceneNode
+): node is EffectStyleCapableNode {
+  return "effectStyleId" in node;
+}
+
+async function assignEffectStyleId(
+  node: SceneNode,
+  styleId: string
+): Promise<void> {
+  if (!nodeSupportsEffectStyles(node)) {
+    throw new Error(`Layer "${node.name}" does not support effect styles`);
+  }
+
+  const setter = (node as EffectStyleCapableNode).setEffectStyleIdAsync;
+
+  if (typeof setter === "function") {
+    await setter.call(node, styleId);
+  } else {
+    (node as any).effectStyleId = styleId;
+  }
+}
+
+function cloneEffect(effect: Effect): Effect {
+  const clone = { ...(effect as any) };
+
+  if ("color" in clone && clone.color) {
+    clone.color = { ...(clone.color as RGBA) };
+  }
+
+  if ("offset" in clone && clone.offset) {
+    clone.offset = { ...(clone.offset as Vector) };
+  }
+
+  if ("boundVariables" in clone) {
+    delete clone.boundVariables;
+  }
+
+  return clone as Effect;
+}
+
+function normalizeNumber(value: number | undefined): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return parseFloat(value.toFixed(4));
+}
+
+function normalizeEffectForKey(effect: Effect): any {
+  const clone = cloneEffect(effect) as any;
+
+  if ("radius" in clone) {
+    clone.radius = normalizeNumber(clone.radius);
+  }
+
+  if ("spread" in clone) {
+    clone.spread = normalizeNumber(clone.spread);
+  }
+
+  if ("offset" in clone && clone.offset) {
+    clone.offset = {
+      x: normalizeNumber(clone.offset.x),
+      y: normalizeNumber(clone.offset.y),
+    };
+  }
+
+  if ("color" in clone && clone.color) {
+    clone.color = {
+      r: normalizeNumber(clone.color.r),
+      g: normalizeNumber(clone.color.g),
+      b: normalizeNumber(clone.color.b),
+      a: normalizeNumber(clone.color.a ?? 1),
+    };
+  }
+
+  return clone;
+}
+
+function serializeEffectSnapshot(effect: Effect): any {
+  const clone = cloneEffect(effect) as any;
+  const snapshot: any = {
+    type: clone.type,
+    visible: typeof clone.visible === "boolean" ? clone.visible : true,
+  };
+
+  if ("radius" in clone) {
+    snapshot.radius = clone.radius;
+  }
+
+  if ("spread" in clone) {
+    snapshot.spread = clone.spread;
+  }
+
+  if ("offset" in clone && clone.offset) {
+    snapshot.offset = { x: clone.offset.x, y: clone.offset.y };
+  }
+
+  if ("color" in clone && clone.color) {
+    snapshot.color = { ...clone.color };
+  }
+
+  if ("blendMode" in clone) {
+    snapshot.blendMode = clone.blendMode;
+  }
+
+  if ("showBehindNode" in clone) {
+    snapshot.showBehindNode = clone.showBehindNode;
+  }
+
+  return snapshot;
+}
+
+function createEffectStackKey(effects: ReadonlyArray<Effect>): string {
+  if (!effects || effects.length === 0) {
+    return "no-effects";
+  }
+
+  const normalized = effects.map((effect) => normalizeEffectForKey(effect));
+  return JSON.stringify(normalized);
+}
+
+async function ensureEffectStyleForEffects(
+  preferredName: string,
+  effects: ReadonlyArray<Effect>
+): Promise<EffectStyle> {
+  const sanitizedEffects = effects.map((effect) => cloneEffect(effect));
+  const targetKey = createEffectStackKey(effects);
+  const localStyles = await figma.getLocalEffectStylesAsync();
+
+  for (const style of localStyles) {
+    const styleKey = createEffectStackKey(style.effects as ReadonlyArray<Effect>);
+    if (styleKey === targetKey) {
+      return style;
+    }
+  }
+
+  const baseName =
+    preferredName && preferredName.trim().length > 0
+      ? preferredName.trim()
+      : "Effect Style";
+
+  const existingNames = new Set(localStyles.map((style) => style.name));
+  let finalName = baseName;
+  let suffix = 2;
+
+  while (existingNames.has(finalName)) {
+    finalName = `${baseName} ${suffix}`;
+    suffix++;
+  }
+
+  const style = figma.createEffectStyle();
+  style.name = finalName;
+  style.effects = sanitizedEffects;
+
+  return style;
+}
+
+async function applyEffectStyleForNode(
+  node: SceneNode,
+  preferredName: string,
+  expectedKey?: string
+): Promise<EffectStyle | null> {
+  if (!("effects" in node) || !node.effects || node.effects.length === 0) {
+    return null;
+  }
+
+  if (!nodeSupportsEffectStyles(node)) {
+    return null;
+  }
+
+  const effectNode = node as EffectStyleCapableNode;
+  const currentKey = createEffectStackKey(node.effects);
+
+  if (expectedKey && currentKey !== expectedKey) {
+    console.warn(
+      `Effect stack changed since analysis for node ${node.name}. Proceeding with current effects.`
+    );
+  }
+
+  if (effectNode.effectStyleId) {
+    // Style already applied; nothing to do
+    return null;
+  }
+
+  const style = await ensureEffectStyleForEffects(preferredName, node.effects);
+  await assignEffectStyleId(effectNode, style.id);
+  return style;
+}
+
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "analyze-selection") {
     await analyzeSelection();
   } else if (msg.type === "update-settings") {
     currentSettings = { ...currentSettings, ...msg.settings };
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "settings-updated",
       settings: currentSettings,
     });
   } else if (msg.type === "get-settings") {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "settings-updated",
       settings: currentSettings,
     });
@@ -85,7 +368,7 @@ figma.ui.onmessage = async (msg) => {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "fills" in node) {
       const colors = extractColorsFromLayer(node as SceneNode);
-      figma.ui.postMessage({
+      postMessageToUI({
         type: "layer-colors",
         colors,
         layerId: msg.layerId,
@@ -95,7 +378,7 @@ figma.ui.onmessage = async (msg) => {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node) {
       const spacing = extractSpacingFromLayer(node as SceneNode);
-      figma.ui.postMessage({
+      postMessageToUI({
         type: "layer-spacing",
         spacing,
         layerId: msg.layerId,
@@ -105,7 +388,7 @@ figma.ui.onmessage = async (msg) => {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node) {
       const effects = extractEffectsFromLayer(node as SceneNode);
-      figma.ui.postMessage({
+      postMessageToUI({
         type: "layer-effects",
         effects,
         layerId: msg.layerId,
@@ -119,10 +402,10 @@ figma.ui.onmessage = async (msg) => {
     await applySpacingVariables(msg.layerId, msg.variableBindings);
   } else if (msg.type === "apply-bulk-spacing-variables") {
     await applyBulkSpacingVariables(msg.layerIds, msg.spacingToVariableMap);
-  } else if (msg.type === "apply-effect-variables") {
-    await applyEffectVariables(msg.layerId, msg.variableBindings);
-  } else if (msg.type === "apply-bulk-effect-variables") {
-    await applyBulkEffectVariables(msg.layerIds, msg.effectToVariableMap);
+  } else if (msg.type === "apply-effect-styles") {
+    await applyEffectStyles(msg.layerId, msg.styleBindings);
+  } else if (msg.type === "apply-bulk-effect-styles") {
+    await applyBulkEffectStyles(msg.layerIds, msg.effectAssignments);
   } else if (msg.type === "export-debug-data") {
     exportDebugData();
   } else if (msg.type === "close") {
@@ -134,7 +417,7 @@ async function analyzeSelection() {
   const selection = figma.currentPage.selection;
 
   if (selection.length === 0) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: "Please select a frame to analyze",
     });
@@ -142,7 +425,7 @@ async function analyzeSelection() {
   }
 
   if (selection.length > 1) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: "Please select only one frame",
     });
@@ -156,23 +439,23 @@ async function analyzeSelection() {
     selectedNode.type !== "COMPONENT" &&
     selectedNode.type !== "INSTANCE"
   ) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: "Please select a frame, component, or instance",
     });
     return;
   }
 
-  figma.ui.postMessage({ type: "analysis-started" });
+  postMessageToUI({ type: "analysis-started" });
 
   try {
     const analysis = await analyzeNode(selectedNode);
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "analysis-complete",
       data: analysis,
     });
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Analysis failed: ${error}`,
     });
@@ -242,7 +525,7 @@ async function traverseNode(
 
       // Send progress update every 10 nodes
       if (stats.totalLayers % 10 === 0) {
-        figma.ui.postMessage({
+        postMessageToUI({
           type: "analysis-progress",
           progress: stats.totalLayers,
         });
@@ -645,26 +928,35 @@ function checkStyleUsage(node: SceneNode): string[] {
   // Check effect styles with detailed analysis
   if ("effects" in node && node.effects && node.effects.length > 0) {
     const effects = node.effects;
-    const hasLocalEffects = effects.some(
-      (effect) =>
-        !effect.boundVariables ||
-        Object.keys(effect.boundVariables).length === 0
-    );
+    const supportsEffectStyles = "effectStyleId" in node;
+    const usingEffectStyle =
+      supportsEffectStyles && (node as any).effectStyleId
+        ? true
+        : false;
+
     const hasVariableBoundEffects = effects.some(
       (effect) =>
-        effect.boundVariables && Object.keys(effect.boundVariables).length > 0
+        (effect as any).boundVariables &&
+        Object.keys((effect as any).boundVariables).length > 0
     );
-    const sharedStyleEffects = node.effectStyleId ? 1 : 0;
+
+    const hasLocalEffects =
+      !usingEffectStyle &&
+      effects.some(
+        (effect) =>
+          !(effect as any).boundVariables ||
+          Object.keys((effect as any).boundVariables).length === 0
+      );
 
     if (hasLocalEffects) {
-      issues.push(`🔴 Uses local effects instead of design tokens`);
+      issues.push(`🔴 Uses local effects instead of design tokens or styles`);
     }
 
     if (hasVariableBoundEffects) {
       issues.push(`✅ Effects properly bound to variables`);
     }
 
-    if (sharedStyleEffects > 0) {
+    if (usingEffectStyle) {
       issues.push(`✅ Uses shared effect style`);
     }
   }
@@ -824,7 +1116,7 @@ async function applyColorVariables(
 ): Promise<void> {
   const node = await figma.getNodeByIdAsync(layerId);
   if (!node || !("fills" in node)) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: "Cannot apply variables to this layer",
     });
@@ -893,10 +1185,10 @@ async function applyColorVariables(
       }
     }
 
-    figma.ui.postMessage({ type: "fix-applied", layerId });
+    postMessageToUI({ type: "fix-applied", layerId });
     figma.notify("✅ Color variables applied successfully!");
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Failed to apply variables: ${error}`,
     });
@@ -991,10 +1283,10 @@ async function applyBulkColorVariables(
       }
     }
 
-    figma.ui.postMessage({ type: "fix-applied", layerId: "bulk" });
+    postMessageToUI({ type: "fix-applied", layerId: "bulk" });
     figma.notify(`✅ Color variables applied to ${layerIds.length} layers!`);
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Failed to apply bulk variables: ${error}`,
     });
@@ -1006,7 +1298,7 @@ async function exportDebugData() {
     const selection = figma.currentPage.selection;
 
     if (selection.length === 0) {
-      figma.ui.postMessage({
+      postMessageToUI({
         type: "error",
         message: "Please select frames to analyze first",
       });
@@ -1076,14 +1368,14 @@ async function exportDebugData() {
     );
 
     // Send debug data to UI
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "debug-data-exported",
       debugData,
     });
 
     figma.notify("✅ Debug data exported to UI");
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Failed to export debug data: ${error}`,
     });
@@ -1346,38 +1638,50 @@ function extractSpacingFromLayer(node: SceneNode): any[] {
 }
 
 function extractEffectsFromLayer(node: SceneNode): any[] {
-  const effects: any[] = [];
+  const effectCandidates: any[] = [];
 
-  if ("effects" in node && node.effects && Array.isArray(node.effects)) {
-    node.effects.forEach((effect, index) => {
-      // Only extract effects that are NOT bound to variables (these are the ones we want to fix)
-      const isBoundToVariable =
-        effect.boundVariables && Object.keys(effect.boundVariables).length > 0;
+  if (
+    "effects" in node &&
+    node.effects &&
+    Array.isArray(node.effects) &&
+    node.effects.length > 0
+  ) {
+    if (!nodeSupportsEffectStyles(node)) {
+      return effectCandidates;
+    }
 
-      if (!isBoundToVariable) {
-        if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
-          effects.push({
-            type: effect.type,
-            radius: (effect as any).radius || 0,
-            index,
-            property: "effects",
-          });
-        } else if (
-          effect.type === "LAYER_BLUR" ||
-          effect.type === "BACKGROUND_BLUR"
-        ) {
-          effects.push({
-            type: effect.type,
-            radius: (effect as any).radius || 0,
-            index,
-            property: "effects",
-          });
-        }
-      }
+    const effectNode = node as EffectStyleCapableNode;
+
+    if (effectNode.effectStyleId) {
+      return effectCandidates;
+    }
+
+    const hasBoundVariables = effectNode.effects.some(
+      (effect: Effect) =>
+        (effect as any).boundVariables &&
+        Object.keys((effect as any).boundVariables).length > 0
+    );
+
+    if (hasBoundVariables) {
+      return effectCandidates;
+    }
+
+    const stackKey = createEffectStackKey(effectNode.effects);
+    const effectSnapshots = effectNode.effects.map((effect: Effect) =>
+      serializeEffectSnapshot(effect)
+    );
+    const primaryEffect = effectSnapshots[0];
+
+    effectCandidates.push({
+      key: stackKey,
+      index: 0,
+      property: "effects",
+      effect: primaryEffect,
+      effects: effectSnapshots,
     });
   }
 
-  return effects;
+  return effectCandidates;
 }
 
 async function applySpacingVariables(
@@ -1386,7 +1690,7 @@ async function applySpacingVariables(
 ): Promise<void> {
   const node = await figma.getNodeByIdAsync(layerId);
   if (!node) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: "Cannot apply variables to this layer",
     });
@@ -1457,12 +1761,12 @@ async function applySpacingVariables(
       }
     }
 
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "fix-applied",
       message: `Applied ${variableBindings.length} spacing variables`,
     });
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Failed to apply spacing variables: ${error}`,
     });
@@ -1557,201 +1861,155 @@ async function applyBulkSpacingVariables(
       }
     }
 
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "fix-applied",
       message: `Applied spacing variables to ${layerIds.length} layers`,
     });
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
       message: `Failed to apply bulk spacing variables: ${error}`,
     });
   }
 }
 
-async function applyEffectVariables(
+interface EffectStyleBinding {
+  styleName: string;
+  key: string;
+  index: number;
+}
+
+interface BulkEffectStyleAssignment {
+  key: string;
+  styleName: string;
+}
+
+async function applyEffectStyles(
   layerId: string,
-  variableBindings: any[]
+  styleBindings: EffectStyleBinding[]
 ): Promise<void> {
-  const node = await figma.getNodeByIdAsync(layerId);
-  if (!node) {
-    figma.ui.postMessage({
+  const node = (await figma.getNodeByIdAsync(layerId)) as SceneNode | null;
+
+  if (!node || !("effects" in node) || !node.effects || node.effects.length === 0) {
+    postMessageToUI({
       type: "error",
-      message: "Cannot apply variables to this layer",
+      message: "Cannot apply effect styles to this layer",
     });
     return;
   }
 
   try {
-    // Get or create variable collection
-    const collections =
-      await figma.variables.getLocalVariableCollectionsAsync();
-    const collection =
-      collections.length > 0
-        ? collections[0]
-        : figma.variables.createVariableCollection("Design System");
+    const primaryBinding = styleBindings[0];
+    const preferredName =
+      (primaryBinding && primaryBinding.styleName) || `Effect ${node.name}`;
+    const expectedKey = primaryBinding ? primaryBinding.key : undefined;
 
-    const modeId = collection.modes[0].modeId;
-    const existingVariables = await figma.variables.getLocalVariablesAsync();
+    const appliedStyle = await applyEffectStyleForNode(
+      node,
+      preferredName,
+      expectedKey
+    );
 
-    // Apply each effect variable
-    for (const binding of variableBindings) {
-      // Find or create variable
-      let variable = existingVariables.find(
-        (v) => v.name === binding.variableName
-      );
-
-      if (!variable) {
-        variable = figma.variables.createVariable(
-          binding.variableName,
-          collection,
-          "FLOAT"
-        );
-      }
-
-      // Set variable value
-      variable.setValueForMode(modeId, binding.radius);
-
-      // Bind the effect property using setBoundVariableForEffect
-      if ("effects" in node && node.effects && node.effects[binding.index]) {
-        const effect = node.effects[binding.index];
-
-        try {
-          // Use the correct Figma API method for binding variables to effects
-          const boundEffect = figma.variables.setBoundVariableForEffect(
-            effect,
-            "radius",
-            variable
-          );
-
-          // Update the effect in the node's effects array
-          const updatedEffects = [...node.effects];
-          updatedEffects[binding.index] = boundEffect;
-          (node as any).effects = updatedEffects;
-
-          console.log(
-            `Successfully bound effect variable to ${effect.type} at index ${binding.index}`
-          );
-        } catch (error) {
-          console.error(
-            `Failed to bind effect variable for ${effect.type} at index ${binding.index}:`,
-            error
-          );
-        }
-      }
+    if (appliedStyle) {
+      postMessageToUI({
+        type: "fix-applied",
+        message: `Applied effect style "${appliedStyle.name}"`,
+      });
+      figma.notify(`✅ Applied effect style "${appliedStyle.name}"`);
+    } else {
+      postMessageToUI({
+        type: "fix-applied",
+        message: "Layer already uses an effect style",
+      });
     }
-
-    figma.ui.postMessage({
-      type: "fix-applied",
-      message: `Applied ${variableBindings.length} effect variables`,
-    });
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
-      message: `Failed to apply effect variables: ${error}`,
+      message: `Failed to apply effect styles: ${error}`,
     });
   }
 }
 
-async function applyBulkEffectVariables(
+async function applyBulkEffectStyles(
   layerIds: string[],
-  effectToVariableMap: Record<string, string>
+  effectAssignments: BulkEffectStyleAssignment[]
 ): Promise<void> {
   try {
-    // Get or create variable collection
-    const collections =
-      await figma.variables.getLocalVariableCollectionsAsync();
-    const collection =
-      collections.length > 0
-        ? collections[0]
-        : figma.variables.createVariableCollection("Design System");
-
-    const modeId = collection.modes[0].modeId;
-    const existingVariables = await figma.variables.getLocalVariablesAsync();
-
-    // Create all variables first
-    const variableCache = new Map<string, Variable>();
-
-    for (const [effectKey, variableName] of Object.entries(
-      effectToVariableMap
-    )) {
-      let variable = variableCache.get(variableName);
-
-      if (!variable) {
-        variable = existingVariables.find((v) => v.name === variableName);
-
-        if (!variable) {
-          // Parse value from key (format: "DROP_SHADOW-10")
-          const [type, valueStr] = effectKey.split("-");
-          const value = parseFloat(valueStr);
-
-          variable = figma.variables.createVariable(
-            variableName,
-            collection,
-            "FLOAT"
-          );
-          variable.setValueForMode(modeId, value);
-        }
-
-        variableCache.set(variableName, variable);
-      }
+    if (!effectAssignments || effectAssignments.length === 0) {
+      postMessageToUI({
+        type: "fix-applied",
+        message: "No effect styles selected for bulk apply",
+      });
+      return;
     }
 
-    // Apply variables to all layers
+    const assignmentMap = new Map<string, BulkEffectStyleAssignment>();
+    effectAssignments.forEach((assignment) =>
+      assignmentMap.set(assignment.key, assignment)
+    );
+
+    const styleCache = new Map<string, EffectStyle>();
+    let layersUpdated = 0;
+
     for (const layerId of layerIds) {
-      const node = await figma.getNodeByIdAsync(layerId);
-      if (!node || !("effects" in node) || !node.effects) continue;
-
-      // Apply each effect variable
-      for (const [effectKey, variableName] of Object.entries(
-        effectToVariableMap
-      )) {
-        const variable = variableCache.get(variableName);
-        if (!variable) continue;
-
-        const [type, valueStr] = effectKey.split("-");
-
-        // Find matching effect by type
-        const effectIndex = node.effects.findIndex(
-          (effect: any) => effect.type === type
-        );
-        if (effectIndex >= 0) {
-          const effect = node.effects[effectIndex];
-
-          try {
-            // Use the correct Figma API method for binding variables to effects
-            const boundEffect = figma.variables.setBoundVariableForEffect(
-              effect,
-              "radius",
-              variable
-            );
-
-            // Update the effect in the node's effects array
-            const updatedEffects = [...node.effects];
-            updatedEffects[effectIndex] = boundEffect;
-            (node as any).effects = updatedEffects;
-
-            console.log(
-              `Successfully bound effect variable to ${type} at index ${effectIndex} on layer ${layerId}`
-            );
-          } catch (error) {
-            console.error(
-              `Failed to bind effect ${type} on layer ${layerId}:`,
-              error
-            );
-          }
-        }
+      const node = (await figma.getNodeByIdAsync(layerId)) as SceneNode | null;
+      if (
+        !node ||
+        !("effects" in node) ||
+        !node.effects ||
+        node.effects.length === 0 ||
+        !nodeSupportsEffectStyles(node)
+      ) {
+        continue;
       }
+
+      const effectNode = node as EffectStyleCapableNode;
+
+      if (effectNode.effectStyleId) {
+        continue; // Already using an effect style
+      }
+
+      const stackKey = createEffectStackKey(effectNode.effects);
+      const assignment = assignmentMap.get(stackKey);
+      if (!assignment) {
+        continue;
+      }
+
+      let style = styleCache.get(stackKey);
+      if (!style) {
+        style = await ensureEffectStyleForEffects(
+          assignment.styleName,
+          effectNode.effects
+        );
+        styleCache.set(stackKey, style);
+      }
+
+      await assignEffectStyleId(effectNode, style.id);
+      layersUpdated++;
     }
 
-    figma.ui.postMessage({
-      type: "fix-applied",
-      message: `Applied effect variables to ${layerIds.length} layers`,
-    });
+    if (layersUpdated > 0) {
+      postMessageToUI({
+        type: "fix-applied",
+        message: `Applied effect styles to ${layersUpdated} layer${
+          layersUpdated === 1 ? "" : "s"
+        }`,
+      });
+      figma.notify(
+        `✅ Applied effect styles to ${layersUpdated} layer${
+          layersUpdated === 1 ? "" : "s"
+        }`
+      );
+    } else {
+      postMessageToUI({
+        type: "fix-applied",
+        message: "No effect styles were applied",
+      });
+    }
   } catch (error) {
-    figma.ui.postMessage({
+    postMessageToUI({
       type: "error",
-      message: `Failed to apply bulk effect variables: ${error}`,
+      message: `Failed to apply effect styles: ${error}`,
     });
   }
 }
