@@ -1,4 +1,13 @@
 import React from "react";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+import { Switch } from "./ui/switch";
+import { Label } from "./ui/label";
 
 interface Settings {
   checkComponents: boolean;
@@ -18,124 +27,105 @@ const SettingsView: React.FC<SettingsViewProps> = ({
   onUpdateSettings,
 }) => {
   return (
-    <div className="settings-view">
-      <div className="settings-section">
-        <h3 className="settings-title">Coverage Checks</h3>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <div className="setting-label">Component Coverage</div>
-            <div className="setting-description">
-              Check if layers use library components instead of local elements
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Coverage Checks</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Component Coverage</Label>
+              <CardDescription className="text-xs">
+                Check if layers use library components instead of local elements
+              </CardDescription>
             </div>
-          </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
+            <Switch
               checked={settings.checkComponents}
-              onChange={(e) =>
-                onUpdateSettings({ checkComponents: e.target.checked })
+              onCheckedChange={(checked) =>
+                onUpdateSettings({ checkComponents: checked })
               }
             />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <div className="setting-label">Token Coverage</div>
-            <div className="setting-description">
-              Check if layers use design tokens for colors, typography, and
-              spacing
-            </div>
           </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Token Coverage</Label>
+              <CardDescription className="text-xs">
+                Check if layers use design tokens for colors, typography, and
+                spacing
+              </CardDescription>
+            </div>
+            <Switch
               checked={settings.checkTokens}
-              onChange={(e) =>
-                onUpdateSettings({ checkTokens: e.target.checked })
+              onCheckedChange={(checked) =>
+                onUpdateSettings({ checkTokens: checked })
               }
             />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <div className="setting-label">Style Coverage</div>
-            <div className="setting-description">
-              Check if layers use shared Figma styles
-            </div>
           </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
+
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Style Coverage</Label>
+              <CardDescription className="text-xs">
+                Check if layers use shared Figma styles
+              </CardDescription>
+            </div>
+            <Switch
               checked={settings.checkStyles}
-              onChange={(e) =>
-                onUpdateSettings({ checkStyles: e.target.checked })
+              onCheckedChange={(checked) =>
+                onUpdateSettings({ checkStyles: checked })
               }
             />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <div className="settings-section">
-        <h3 className="settings-title">Analysis Options</h3>
-
-        <div className="setting-item">
-          <div className="setting-info">
-            <div className="setting-label">Allow Local Styles</div>
-            <div className="setting-description">
-              Don't flag layers using local styles as non-compliant
-            </div>
           </div>
-          <label className="toggle">
-            <input
-              type="checkbox"
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Analysis Options</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="space-y-1">
+              <Label className="text-sm font-medium">Allow Local Styles</Label>
+              <CardDescription className="text-xs">
+                Don't flag layers using local styles as non-compliant
+              </CardDescription>
+            </div>
+            <Switch
               checked={settings.allowLocalStyles}
-              onChange={(e) =>
-                onUpdateSettings({ allowLocalStyles: e.target.checked })
+              onCheckedChange={(checked) =>
+                onUpdateSettings({ allowLocalStyles: checked })
               }
             />
-            <span className="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
+          </div>
+        </CardContent>
+      </Card>
 
-      <div className="settings-section">
-        <h3 className="settings-title">About</h3>
-        <p
-          style={{
-            fontSize: "11px",
-            color: "var(--text-secondary)",
-            lineHeight: "1.6",
-          }}
-        >
-          This plugin analyzes your designs for design system compliance. It
-          checks component usage, design token adoption, and shared style usage
-          to help maintain consistency across your designs.
-        </p>
-        <p
-          style={{
-            fontSize: "11px",
-            color: "var(--text-secondary)",
-            lineHeight: "1.6",
-            marginTop: "12px",
-          }}
-        >
-          <strong>How to use:</strong>
-          <br />
-          1. Select a frame, component, or instance
-          <br />
-          2. Click "Analyze Selection"
-          <br />
-          3. Review the summary and detailed report
-          <br />
-          4. Fix non-compliant layers and re-run the analysis
-        </p>
-      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">About</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            This plugin analyzes your designs for design system compliance. It
+            checks component usage, design token adoption, and shared style
+            usage to help maintain consistency across your designs.
+          </p>
+          <div className="text-xs text-muted-foreground leading-relaxed">
+            <strong>How to use:</strong>
+            <br />
+            1. Select a frame, component, or instance
+            <br />
+            2. Click "Analyze Selection"
+            <br />
+            3. Review the summary and detailed report
+            <br />
+            4. Fix non-compliant layers and re-run the analysis
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 };

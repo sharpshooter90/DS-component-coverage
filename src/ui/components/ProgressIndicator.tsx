@@ -1,4 +1,6 @@
 import React from "react";
+import { Card, CardContent } from "./ui/card";
+import { Progress } from "./ui/progress";
 
 interface ProgressIndicatorProps {
   progress: number;
@@ -6,15 +8,15 @@ interface ProgressIndicatorProps {
 
 const ProgressIndicator: React.FC<ProgressIndicatorProps> = ({ progress }) => {
   return (
-    <div className="progress-container">
-      <div className="progress-text">
-        Analyzing design system coverage...
-        {progress > 0 && ` (${progress} layers scanned)`}
-      </div>
-      <div className="progress-bar">
-        <div className="progress-fill" style={{ width: "100%" }}></div>
-      </div>
-    </div>
+    <Card className="m-4">
+      <CardContent className="p-4">
+        <div className="text-xs text-muted-foreground mb-2 text-center">
+          Analyzing design system coverage...
+          {progress > 0 && ` (${progress} layers scanned)`}
+        </div>
+        <Progress value={100} className="h-1" />
+      </CardContent>
+    </Card>
   );
 };
 

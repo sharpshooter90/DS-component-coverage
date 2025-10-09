@@ -6,6 +6,11 @@ import path from "path";
 export default defineConfig({
   plugins: [react(), viteSingleFile()],
   root: "src/ui",
+  css: {
+    postcss: {
+      plugins: [require("tailwindcss"), require("autoprefixer")],
+    },
+  },
   build: {
     target: "es2017",
     outDir: path.resolve(__dirname, "dist"),

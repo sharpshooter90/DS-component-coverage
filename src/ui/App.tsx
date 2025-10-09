@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import "./styles.css";
+import "./globals.css";
 import SummaryView from "./components/SummaryView";
 import DetailedView from "./components/DetailedView";
 import SettingsView from "./components/SettingsView";
@@ -8,6 +8,15 @@ import ErrorMessage from "./components/ErrorMessage";
 import ProgressIndicator from "./components/ProgressIndicator";
 import FixWizard from "./components/FixWizard";
 import DebugView from "./components/DebugView";
+import { Button } from "./components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./components/ui/card";
 
 type ViewType = "summary" | "detailed" | "settings";
 
@@ -141,21 +150,17 @@ function App() {
   };
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1 className="title">DS Coverage Analyzer</h1>
-        <div className="header-actions">
-          <button
-            className="btn btn-primary"
-            onClick={handleAnalyze}
-            disabled={isAnalyzing}
-          >
+    <div className="figma-plugin bg-background text-foreground flex flex-col h-screen">
+      <header className="border-b border-border p-4 bg-background">
+        <h1 className="text-lg font-semibold mb-3">DS Coverage Analyzer</h1>
+        <div className="flex gap-2">
+          <Button onClick={handleAnalyze} disabled={isAnalyzing} size="sm">
             {isAnalyzing
               ? "Analyzing..."
               : analysis
               ? "Re-run Analysis"
               : "Analyze Selection"}
-          </button>
+          </Button>
         </div>
       </header>
 
@@ -164,7 +169,7 @@ function App() {
       )}
 
       {showSuccessMessage && (
-        <div className="success-message">
+        <div className="fixed top-5 left-1/2 transform -translate-x-1/2 bg-green-500 text-white px-5 py-3 rounded-lg text-sm font-medium z-50 shadow-lg animate-in slide-in-from-top-2 duration-300">
           ✅ Fixes applied successfully! Click "🔄 Refresh" to see updated
           compliance status.
         </div>
@@ -173,33 +178,28 @@ function App() {
       {isAnalyzing && <ProgressIndicator progress={progress} />}
 
       {!isAnalyzing && analysis && (
-        <>
-          <nav className="tabs">
-            <button
-              className={`tab ${view === "summary" ? "active" : ""}`}
-              onClick={() => setView("summary")}
-            >
+        <Tabs
+          value={view}
+          onValueChange={(value) => setView(value as ViewType)}
+          className="flex flex-col flex-1"
+        >
+          <TabsList className="grid w-full grid-cols-3 bg-muted p-1">
+            <TabsTrigger value="summary" className="text-xs">
               Summary
-            </button>
-            <button
-              className={`tab ${view === "detailed" ? "active" : ""}`}
-              onClick={() => setView("detailed")}
-            >
+            </TabsTrigger>
+            <TabsTrigger value="detailed" className="text-xs">
               Detailed Report
-            </button>
-            <button
-              className={`tab ${view === "settings" ? "active" : ""}`}
-              onClick={() => setView("settings")}
-            >
+            </TabsTrigger>
+            <TabsTrigger value="settings" className="text-xs">
               Settings
-            </button>
-          </nav>
+            </TabsTrigger>
+          </TabsList>
 
-          <main className="content">
-            {view === "summary" && (
+          <div className="flex-1 figma-plugin-scroll">
+            <TabsContent value="summary" className="p-4">
               <SummaryView analysis={analysis} onExport={handleExport} />
-            )}
-            {view === "detailed" && (
+            </TabsContent>
+            <TabsContent value="detailed" className="p-4">
               <DetailedView
                 analysis={analysis}
                 onSelectLayer={handleSelectLayer}
@@ -210,35 +210,49 @@ function App() {
                 onExportDebug={handleExportDebug}
                 onRefresh={handleAnalyze}
               />
-            )}
-            {view === "settings" && (
+            </TabsContent>
+            <TabsContent value="settings" className="p-4">
               <SettingsView
                 settings={settings}
                 onUpdateSettings={handleUpdateSettings}
               />
-            )}
-          </main>
-        </>
+            </TabsContent>
+          </div>
+        </Tabs>
       )}
 
       {!isAnalyzing && !analysis && !error && (
-        <div className="empty-state">
-          <div className="empty-icon">📊</div>
-          <h2>No Analysis Yet</h2>
-          <p>Select a frame and click "Analyze Selection" to get started</p>
-          <div className="features">
-            <div className="feature">
-              <strong>Component Coverage</strong>
-              <span>Track library component usage</span>
-            </div>
-            <div className="feature">
-              <strong>Token Coverage</strong>
-              <span>Check design token adoption</span>
-            </div>
-            <div className="feature">
-              <strong>Style Coverage</strong>
-              <span>Monitor shared style usage</span>
-            </div>
+        <div className="flex flex-col items-center justify-center p-12 text-center flex-1">
+          <div className="text-5xl mb-4">📊</div>
+          <h2 className="text-xl font-semibold mb-2">No Analysis Yet</h2>
+          <p className="text-muted-foreground mb-6">
+            Select a frame and click "Analyze Selection" to get started
+          </p>
+          <div className="flex flex-col gap-3 w-full max-w-xs">
+            <Card>
+              <CardContent className="p-3 text-left">
+                <strong className="text-sm">Component Coverage</strong>
+                <span className="text-xs text-muted-foreground block">
+                  Track library component usage
+                </span>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-3 text-left">
+                <strong className="text-sm">Token Coverage</strong>
+                <span className="text-xs text-muted-foreground block">
+                  Check design token adoption
+                </span>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-3 text-left">
+                <strong className="text-sm">Style Coverage</strong>
+                <span className="text-xs text-muted-foreground block">
+                  Monitor shared style usage
+                </span>
+              </CardContent>
+            </Card>
           </div>
         </div>
       )}

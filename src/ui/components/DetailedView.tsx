@@ -1,4 +1,17 @@
 import React, { useState } from "react";
+import { Button } from "./ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
+import { Badge } from "./ui/badge";
+import { Input } from "./ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "./ui/select";
+import { Checkbox } from "./ui/checkbox";
+import { cn } from "../lib/utils";
 
 interface DetailedViewProps {
   analysis: {
@@ -154,225 +167,241 @@ const DetailedView: React.FC<DetailedViewProps> = ({
     });
 
   return (
-    <div className="detailed-view">
+    <div className="space-y-4">
       {/* Top Action Bar */}
-      <div className="detailed-action-bar">
-        <div className="action-bar-left">
-          <h3 className="action-bar-title">
-            📋 Non-Compliant Layers ({nonCompliantLayers.length})
-          </h3>
-          {layersWithFixableIssues.length > 0 && (
-            <span className="fixable-count">
-              {layersWithFixableIssues.length} fixable
-            </span>
-          )}
-        </div>
-        <div className="action-bar-right">
-          {layersWithFixableIssues.length > 0 && (
-            <>
-              <button
-                className="btn btn-small btn-secondary"
-                onClick={selectAll}
-              >
-                Select All
-              </button>
-              {selectedLayers.size > 0 && (
-                <>
-                  <button
-                    className="btn btn-small btn-secondary"
-                    onClick={deselectAll}
-                  >
-                    Deselect ({selectedLayers.size})
-                  </button>
-                  <button
-                    className="btn btn-small btn-primary"
-                    onClick={handleBulkFix}
-                  >
-                    🔧 Fix {selectedLayers.size} Layer
-                    {selectedLayers.size > 1 ? "s" : ""}
-                  </button>
-                </>
-              )}
-            </>
-          )}
-          {onRefresh && (
-            <button
-              className="btn btn-small btn-secondary"
-              onClick={onRefresh}
-              title="Refresh compliance status after applying fixes"
-            >
-              🔄 Refresh
-            </button>
-          )}
-          {onExportDebug && (
-            <button
-              className="btn btn-small btn-secondary"
-              onClick={onExportDebug}
-            >
-              💾 Export Debug
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Filters */}
-      <div className="filter-section">
-        <input
-          type="text"
-          className="filter-input"
-          placeholder="🔍 Search by name, path, or issue..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-        />
-        <select
-          className="filter-input"
-          value={filterType}
-          onChange={(e) => setFilterType(e.target.value)}
-        >
-          <option value="all">All Types ({nonCompliantLayers.length})</option>
-          {uniqueTypes.map((type) => {
-            const count = nonCompliantLayers.filter(
-              (l) => l.type === type
-            ).length;
-            return (
-              <option key={type} value={type}>
-                {type} ({count})
-              </option>
-            );
-          })}
-        </select>
-        <select
-          className="filter-input"
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as any)}
-        >
-          <option value="severity">Sort: Severity (Critical First)</option>
-          <option value="name">Sort: Name (A-Z)</option>
-          <option value="type">Sort: Type</option>
-        </select>
-      </div>
-
-      <div className="layers-list">
-        {filteredLayers.length === 0 ? (
-          <div className="empty-state">
-            <p>No non-compliant layers found</p>
-          </div>
-        ) : (
-          filteredLayers.map((layer) => (
-            <div
-              key={layer.id}
-              className={`layer-item enhanced ${
-                selectedLayers.has(layer.id) ? "selected" : ""
-              }`}
-            >
-              <div className="layer-header">
-                {hasFixableIssue(layer.issues) && (
-                  <input
-                    type="checkbox"
-                    className="layer-checkbox"
-                    checked={selectedLayers.has(layer.id)}
-                    onChange={() => toggleLayerSelection(layer.id)}
-                  />
-                )}
-                <div className="layer-info">
-                  <div className="layer-name-row">
-                    <div className="layer-name">{layer.name}</div>
-                    <span
-                      className={`layer-status-badge ${
-                        isCompliant(layer.issues)
-                          ? "compliant"
-                          : "non-compliant"
-                      }`}
-                    >
-                      {isCompliant(layer.issues)
-                        ? "✅ Compliant"
-                        : "❌ Non-Compliant"}
-                    </span>
-                  </div>
-                  <div className="layer-meta">
-                    <span className="layer-type">{layer.type}</span>
-                    <span className="layer-path-short">{layer.path}</span>
-                  </div>
-                </div>
-                <div className="layer-actions">
-                  <button
-                    className="btn btn-small btn-secondary layer-select-btn"
-                    onClick={() => onSelectLayer(layer.id)}
-                    title="Select in Figma"
-                  >
-                    📍 Select
-                  </button>
-                  {onFixLayer && hasFixableIssue(layer.issues) && (
-                    <button
-                      className="btn btn-small btn-primary layer-fix-btn"
-                      onClick={() => onFixLayer([layer])}
-                      title="Fix this layer"
-                    >
-                      🔧 Fix
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <div className="layer-issues">
-                <div className="issues-header">
-                  <strong>Issues:</strong>
-                </div>
-                {layer.issues.map((issue, idx) => (
-                  <div
-                    key={idx}
-                    className={`issue ${
-                      issue.includes("🔴")
-                        ? "critical"
-                        : issue.includes("⚠️")
-                        ? "warning"
-                        : "success"
-                    }`}
-                  >
-                    {issue}
-                  </div>
-                ))}
-              </div>
-
-              {layer.rawProperties && (
-                <details className="layer-details">
-                  <summary className="details-toggle">
-                    🔍 View Raw Properties
-                  </summary>
-                  <div className="details-content">
-                    <pre className="properties-json">
-                      {JSON.stringify(layer.rawProperties, null, 2)}
-                    </pre>
-                  </div>
-                </details>
-              )}
-
-              {layer.analysis && (
-                <details className="layer-details">
-                  <summary className="details-toggle">
-                    📊 View Analysis Results
-                  </summary>
-                  <div className="details-content">
-                    <pre className="properties-json">
-                      {JSON.stringify(layer.analysis, null, 2)}
-                    </pre>
-                  </div>
-                </details>
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-sm">
+                📋 Non-Compliant Layers ({nonCompliantLayers.length})
+              </CardTitle>
+              {layersWithFixableIssues.length > 0 && (
+                <Badge variant="warning" className="text-xs">
+                  {layersWithFixableIssues.length} fixable
+                </Badge>
               )}
             </div>
+            <div className="flex gap-2">
+              {layersWithFixableIssues.length > 0 && (
+                <>
+                  <Button variant="outline" size="sm" onClick={selectAll}>
+                    Select All
+                  </Button>
+                  {selectedLayers.size > 0 && (
+                    <>
+                      <Button variant="outline" size="sm" onClick={deselectAll}>
+                        Deselect ({selectedLayers.size})
+                      </Button>
+                      <Button size="sm" onClick={handleBulkFix}>
+                        🔧 Fix {selectedLayers.size} Layer
+                        {selectedLayers.size > 1 ? "s" : ""}
+                      </Button>
+                    </>
+                  )}
+                </>
+              )}
+              {onRefresh && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={onRefresh}
+                  title="Refresh compliance status after applying fixes"
+                >
+                  🔄 Refresh
+                </Button>
+              )}
+              {onExportDebug && (
+                <Button variant="outline" size="sm" onClick={onExportDebug}>
+                  💾 Export Debug
+                </Button>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+      </Card>
+
+      {/* Filters */}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex gap-3 flex-wrap">
+            <Input
+              placeholder="🔍 Search by name, path, or issue..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="flex-1 min-w-48"
+            />
+            <Select value={filterType} onValueChange={setFilterType}>
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">
+                  All Types ({nonCompliantLayers.length})
+                </SelectItem>
+                {uniqueTypes.map((type) => {
+                  const count = nonCompliantLayers.filter(
+                    (l) => l.type === type
+                  ).length;
+                  return (
+                    <SelectItem key={type} value={type}>
+                      {type} ({count})
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            <Select
+              value={sortBy}
+              onValueChange={(value) => setSortBy(value as any)}
+            >
+              <SelectTrigger className="w-48">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="severity">
+                  Sort: Severity (Critical First)
+                </SelectItem>
+                <SelectItem value="name">Sort: Name (A-Z)</SelectItem>
+                <SelectItem value="type">Sort: Type</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="space-y-3">
+        {filteredLayers.length === 0 ? (
+          <Card>
+            <CardContent className="p-8 text-center">
+              <p className="text-muted-foreground">
+                No non-compliant layers found
+              </p>
+            </CardContent>
+          </Card>
+        ) : (
+          filteredLayers.map((layer) => (
+            <Card
+              key={layer.id}
+              className={cn(
+                "transition-all duration-200 hover:shadow-md",
+                selectedLayers.has(layer.id) &&
+                  "ring-2 ring-primary bg-primary/5"
+              )}
+            >
+              <CardContent className="p-4">
+                <div className="flex items-start gap-3">
+                  {hasFixableIssue(layer.issues) && (
+                    <Checkbox
+                      checked={selectedLayers.has(layer.id)}
+                      onCheckedChange={() => toggleLayerSelection(layer.id)}
+                      className="mt-1"
+                    />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-2">
+                      <h4 className="text-sm font-semibold truncate">
+                        {layer.name}
+                      </h4>
+                      <Badge
+                        variant={
+                          isCompliant(layer.issues) ? "success" : "destructive"
+                        }
+                        className="text-xs shrink-0"
+                      >
+                        {isCompliant(layer.issues)
+                          ? "✅ Compliant"
+                          : "❌ Non-Compliant"}
+                      </Badge>
+                    </div>
+                    <div className="flex items-center gap-2 mb-3 text-xs text-muted-foreground">
+                      <Badge variant="outline" className="text-xs">
+                        {layer.type}
+                      </Badge>
+                      <span className="truncate">{layer.path}</span>
+                    </div>
+
+                    <div className="space-y-2">
+                      <div className="text-xs font-medium text-muted-foreground">
+                        Issues:
+                      </div>
+                      <div className="space-y-1">
+                        {layer.issues.map((issue, idx) => (
+                          <div
+                            key={idx}
+                            className={cn(
+                              "text-xs p-2 rounded border-l-2",
+                              issue.includes("🔴")
+                                ? "border-l-red-500 bg-red-50 text-red-700"
+                                : issue.includes("⚠️")
+                                ? "border-l-yellow-500 bg-yellow-50 text-yellow-700"
+                                : "border-l-green-500 bg-green-50 text-green-700"
+                            )}
+                          >
+                            {issue}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {(layer.rawProperties || layer.analysis) && (
+                      <div className="mt-3 space-y-2">
+                        {layer.rawProperties && (
+                          <details className="group">
+                            <summary className="text-xs text-primary cursor-pointer hover:text-primary/80 font-medium">
+                              🔍 View Raw Properties
+                            </summary>
+                            <div className="mt-2 p-3 bg-muted rounded-md">
+                              <pre className="text-xs font-mono overflow-x-auto">
+                                {JSON.stringify(layer.rawProperties, null, 2)}
+                              </pre>
+                            </div>
+                          </details>
+                        )}
+
+                        {layer.analysis && (
+                          <details className="group">
+                            <summary className="text-xs text-primary cursor-pointer hover:text-primary/80 font-medium">
+                              📊 View Analysis Results
+                            </summary>
+                            <div className="mt-2 p-3 bg-muted rounded-md">
+                              <pre className="text-xs font-mono overflow-x-auto">
+                                {JSON.stringify(layer.analysis, null, 2)}
+                              </pre>
+                            </div>
+                          </details>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2 shrink-0">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => onSelectLayer(layer.id)}
+                      title="Select in Figma"
+                    >
+                      📍 Select
+                    </Button>
+                    {onFixLayer && hasFixableIssue(layer.issues) && (
+                      <Button
+                        size="sm"
+                        onClick={() => onFixLayer([layer])}
+                        title="Fix this layer"
+                      >
+                        🔧 Fix
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           ))
         )}
       </div>
 
       {filteredLayers.length > 0 && (
-        <div
-          style={{
-            marginTop: "16px",
-            textAlign: "center",
-            fontSize: "11px",
-            color: "var(--text-secondary)",
-          }}
-        >
+        <div className="text-center text-xs text-muted-foreground mt-4">
           Showing {filteredLayers.length} of {nonCompliantLayers.length}{" "}
           non-compliant layers
         </div>
