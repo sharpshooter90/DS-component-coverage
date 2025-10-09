@@ -86,6 +86,9 @@ let currentSettings: AnalysisSettings = { ...defaultSettings };
 
 figma.showUI(__html__, { width: 480, height: 720 });
 
+let selectionSubscriptionCount = 0;
+let lastAnalyzedNodeId: string | null = null;
+
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "analyze-selection") {
     await analyzeSelection();
@@ -154,10 +157,54 @@ figma.ui.onmessage = async (msg) => {
     await convertFramesToAutoLayout(msg.layerIds, msg.direction);
   } else if (msg.type === "export-debug-data") {
     exportDebugData();
+  } else if (msg.type === "subscribe-selection") {
+    selectionSubscriptionCount++;
+    if (selectionSubscriptionCount === 1) {
+      figma.on("selectionchange", handleSelectionChange);
+      handleSelectionChange();
+    }
+  } else if (msg.type === "unsubscribe-selection") {
+    selectionSubscriptionCount = Math.max(0, selectionSubscriptionCount - 1);
+    if (selectionSubscriptionCount === 0) {
+      figma.off("selectionchange", handleSelectionChange);
+    }
   } else if (msg.type === "close") {
     figma.closePlugin();
   }
 };
+
+function notifySelectionChange(nodeId: string | null) {
+  postMessageToUI({ type: "selection-changed", nodeId });
+}
+
+function handleSelectionChange() {
+  const selection = figma.currentPage.selection;
+  if (selection.length !== 1) {
+    lastAnalyzedNodeId = null;
+    notifySelectionChange(null);
+    return;
+  }
+
+  const node = selection[0];
+  if (
+    node.type !== "FRAME" &&
+    node.type !== "COMPONENT" &&
+    node.type !== "INSTANCE"
+  ) {
+    lastAnalyzedNodeId = null;
+    notifySelectionChange(null);
+    return;
+  }
+
+  if (lastAnalyzedNodeId === node.id) {
+    notifySelectionChange(node.id);
+    return;
+  }
+
+  lastAnalyzedNodeId = node.id;
+  notifySelectionChange(node.id);
+  runAnalysisOnNode(node);
+}
 
 async function analyzeSelection() {
   const selection = figma.currentPage.selection;
@@ -192,10 +239,14 @@ async function analyzeSelection() {
     return;
   }
 
+  await runAnalysisOnNode(selectedNode);
+}
+
+async function runAnalysisOnNode(node: SceneNode) {
   postMessageToUI({ type: "analysis-started" });
 
   try {
-    const analysis = await analyzeNode(selectedNode);
+    const analysis = await analyzeNode(node);
     postMessageToUI({
       type: "analysis-complete",
       data: analysis,

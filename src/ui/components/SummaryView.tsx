@@ -23,6 +23,14 @@ interface SummaryViewProps {
 
 const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
   const { summary, details } = analysis;
+  const [showPerfect, setShowPerfect] = React.useState<boolean>(false);
+  const sortedEntries = React.useMemo(
+    () =>
+      Object.entries(details.byType)
+        .sort((a, b) => a[1].percentage - b[1].percentage)
+        .filter(([, stats]) => showPerfect || stats.percentage < 100),
+    [details.byType, showPerfect]
+  );
 
   const getScoreClass = (score: number) => {
     if (score >= 80) return "high";
@@ -70,26 +78,42 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
       </div>
 
       <div className="type-breakdown">
-        <h3 className="breakdown-title">Coverage by Element Type</h3>
-        {Object.entries(details.byType)
-          .sort((a, b) => b[1].total - a[1].total)
-          .map(([type, stats]) => (
-            <div key={type} className="breakdown-item">
-              <div className="breakdown-name">{type}</div>
-              <div className="breakdown-stats">
-                <div className="breakdown-count">
-                  {stats.compliant} / {stats.total}
-                </div>
-                <div
-                  className={`breakdown-percentage ${getScoreClass(
-                    stats.percentage
-                  )}`}
-                >
-                  {stats.percentage}%
-                </div>
+        <div className="breakdown-header">
+          <h3 className="breakdown-title">Coverage by Element Type</h3>
+          <label className="toggle-label">
+            <input
+              type="checkbox"
+              checked={showPerfect}
+              onChange={(e) => setShowPerfect(e.target.checked)}
+            />
+            Show 100% items
+          </label>
+        </div>
+        {sortedEntries.map(([type, stats]) => (
+          <div key={type} className="breakdown-item">
+            <div className="breakdown-name">{type}</div>
+            <div className="breakdown-stats">
+              <div className="breakdown-count">
+                {stats.compliant} / {stats.total}
+              </div>
+              <div
+                className={`breakdown-percentage ${getScoreClass(
+                  stats.percentage
+                )}`}
+              >
+                {stats.percentage}%
               </div>
             </div>
-          ))}
+            <div className="breakdown-actions">
+              <button className="btn btn-small btn-secondary" disabled>
+                📦 Select All
+              </button>
+              <button className="btn btn-small btn-primary" disabled>
+                ⚡ Fix Layer Type
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="export-section">

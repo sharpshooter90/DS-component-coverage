@@ -65,12 +65,11 @@ function App() {
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
 
   useEffect(() => {
-    // Request current settings on mount
     window.parent.postMessage({ pluginMessage: { type: "get-settings" } }, "*");
 
-    // Listen for messages from plugin
-    window.onmessage = (event) => {
+    const handleMessage = (event: MessageEvent) => {
       const msg = event.data.pluginMessage;
+      if (!msg) return;
 
       if (msg.type === "analysis-started") {
         setIsAnalyzing(true);
@@ -90,13 +89,37 @@ function App() {
       } else if (msg.type === "fix-applied") {
         setShowFixWizard(false);
         setSelectedFixLayer(null);
-        // Show success message and hide it after 3 seconds
         setShowSuccessMessage(true);
         setTimeout(() => setShowSuccessMessage(false), 3000);
       } else if (msg.type === "debug-data-exported") {
         setDebugData(msg.debugData);
         setShowDebugView(true);
+      } else if (msg.type === "selection-changed") {
+        if (!msg.nodeId) {
+          setAnalysis(null);
+          setView("summary");
+        } else {
+          window.parent.postMessage(
+            { pluginMessage: { type: "analyze-selection" } },
+            "*"
+          );
+        }
       }
+    };
+
+    window.addEventListener("message", handleMessage);
+
+    window.parent.postMessage(
+      { pluginMessage: { type: "subscribe-selection" } },
+      "*"
+    );
+
+    return () => {
+      window.removeEventListener("message", handleMessage);
+      window.parent.postMessage(
+        { pluginMessage: { type: "unsubscribe-selection" } },
+        "*"
+      );
     };
   }, []);
 

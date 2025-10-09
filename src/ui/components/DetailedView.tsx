@@ -41,6 +41,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   const [sortBy, setSortBy] = useState<"severity" | "name" | "type">(
     "severity"
   );
+  const [showCompliant, setShowCompliant] = useState<boolean>(false);
 
   const { nonCompliantLayers, suggestions } = analysis.details;
 
@@ -140,6 +141,9 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   // Filter and sort layers
   const filteredLayers = nonCompliantLayers
     .filter((layer) => {
+      if (!showCompliant && isCompliant(layer.issues)) {
+        return false;
+      }
       const matchesSearch =
         layer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
         layer.path.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -170,7 +174,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
       <div className="detailed-action-bar">
         <div className="action-bar-left">
           <h3 className="action-bar-title">
-            📋 Non-Compliant Layers ({nonCompliantLayers.length})
+            📋 Layer Compliance
           </h3>
           {layersWithFixableIssues.length > 0 && (
             <span className="fixable-count">
@@ -179,6 +183,14 @@ const DetailedView: React.FC<DetailedViewProps> = ({
           )}
         </div>
         <div className="action-bar-right">
+          <label className="toggle-label">
+            <input
+              type="checkbox"
+              checked={showCompliant}
+              onChange={(e) => setShowCompliant(e.target.checked)}
+            />
+            Show compliant layers
+          </label>
           {layersWithFixableIssues.length > 0 && (
             <>
               <button

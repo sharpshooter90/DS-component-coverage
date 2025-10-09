@@ -305,28 +305,51 @@ body {
 /* Type Breakdown */
 .type-breakdown {
   margin-bottom: 16px;
+  background: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.breakdown-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .breakdown-title {
   font-size: 13px;
   font-weight: 600;
-  margin-bottom: 12px;
+  margin: 0;
 }
 
 .breakdown-item {
+  position: relative;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border-color);
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
 }
 
-.breakdown-item:last-child {
-  border-bottom: none;
+.breakdown-item + .breakdown-item {
+  margin-top: 8px;
+}
+
+.breakdown-item:hover .breakdown-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .breakdown-name {
   font-size: 12px;
+  font-weight: 500;
 }
 
 .breakdown-stats {
@@ -345,6 +368,23 @@ body {
   font-weight: 600;
   min-width: 40px;
   text-align: right;
+}
+
+.breakdown-actions {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.breakdown-actions .btn {
+  padding: 4px 8px;
+  font-size: 10px;
 }
 
 /* Export Section */
