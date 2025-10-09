@@ -6,8 +6,10 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "moduleResolution": "node",
-    "typeRoots": ["./node_modules/@types", "./node_modules/@figma"]
+    "typeRoots": ["./node_modules/@types", "./node_modules/@figma"],
+    "rootDir": "src/plugin",
+    "noEmit": true
   },
-  "include": ["code.ts"],
-  "exclude": ["node_modules", "dist", "src"]
+  "include": ["src/plugin/**/*.ts"],
+  "exclude": ["node_modules", "dist", "src/ui"]
 }
