@@ -124,7 +124,19 @@ Every non-compliant layer now includes a collapsible "View Raw Properties" secti
 ```json
 {
   "boundVariables": {
-    "cornerRadius": {
+    "topLeftRadius": {
+      "type": "VARIABLE_ALIAS",
+      "id": "VariableID:123/456:789"
+    },
+    "topRightRadius": {
+      "type": "VARIABLE_ALIAS",
+      "id": "VariableID:123/456:789"
+    },
+    "bottomLeftRadius": {
+      "type": "VARIABLE_ALIAS",
+      "id": "VariableID:123/456:789"
+    },
+    "bottomRightRadius": {
       "type": "VARIABLE_ALIAS",
       "id": "VariableID:123/456:789"
     },

@@ -68,3 +68,49 @@ export interface VariableBinding {
   type: "fill" | "stroke";
   index: number;
 }
+
+export interface SpacingData {
+  type:
+    | "cornerRadius"
+    | "paddingTop"
+    | "paddingRight"
+    | "paddingBottom"
+    | "paddingLeft"
+    | "paddingHorizontal"
+    | "paddingVertical"
+    | "itemSpacing";
+  value: number;
+  property: string;
+  properties?: string[]; // For grouped properties like paddingHorizontal -> ["paddingLeft", "paddingRight"]
+}
+
+export interface SpacingVariableBinding {
+  variableName: string;
+  value: number;
+  type:
+    | "cornerRadius"
+    | "paddingTop"
+    | "paddingRight"
+    | "paddingBottom"
+    | "paddingLeft"
+    | "paddingHorizontal"
+    | "paddingVertical"
+    | "itemSpacing";
+  property: string;
+  properties?: string[]; // For grouped properties like paddingHorizontal -> ["paddingLeft", "paddingRight"]
+}
+
+export interface EffectData {
+  type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+  radius: number;
+  index: number;
+  property: string;
+}
+
+export interface EffectVariableBinding {
+  variableName: string;
+  radius: number;
+  type: "DROP_SHADOW" | "INNER_SHADOW" | "LAYER_BLUR" | "BACKGROUND_BLUR";
+  index: number;
+  property: string;
+}

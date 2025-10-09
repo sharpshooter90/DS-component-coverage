@@ -25,6 +25,7 @@ interface DetailedViewProps {
     }>
   ) => void;
   onExportDebug?: () => void;
+  onRefresh?: () => void;
 }
 
 const DetailedView: React.FC<DetailedViewProps> = ({
@@ -32,6 +33,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   onSelectLayer,
   onFixLayer,
   onExportDebug,
+  onRefresh,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterType, setFilterType] = useState<string>("all");
@@ -192,6 +194,15 @@ const DetailedView: React.FC<DetailedViewProps> = ({
                 </>
               )}
             </>
+          )}
+          {onRefresh && (
+            <button
+              className="btn btn-small btn-secondary"
+              onClick={onRefresh}
+              title="Refresh compliance status after applying fixes"
+            >
+              🔄 Refresh
+            </button>
           )}
           {onExportDebug && (
             <button

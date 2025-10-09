@@ -91,10 +91,38 @@ figma.ui.onmessage = async (msg) => {
         layerId: msg.layerId,
       });
     }
+  } else if (msg.type === "get-layer-spacing") {
+    const node = await figma.getNodeByIdAsync(msg.layerId);
+    if (node) {
+      const spacing = extractSpacingFromLayer(node as SceneNode);
+      figma.ui.postMessage({
+        type: "layer-spacing",
+        spacing,
+        layerId: msg.layerId,
+      });
+    }
+  } else if (msg.type === "get-layer-effects") {
+    const node = await figma.getNodeByIdAsync(msg.layerId);
+    if (node) {
+      const effects = extractEffectsFromLayer(node as SceneNode);
+      figma.ui.postMessage({
+        type: "layer-effects",
+        effects,
+        layerId: msg.layerId,
+      });
+    }
   } else if (msg.type === "apply-color-variables") {
     await applyColorVariables(msg.layerId, msg.variableBindings);
   } else if (msg.type === "apply-bulk-color-variables") {
     await applyBulkColorVariables(msg.layerIds, msg.colorToVariableMap);
+  } else if (msg.type === "apply-spacing-variables") {
+    await applySpacingVariables(msg.layerId, msg.variableBindings);
+  } else if (msg.type === "apply-bulk-spacing-variables") {
+    await applyBulkSpacingVariables(msg.layerIds, msg.spacingToVariableMap);
+  } else if (msg.type === "apply-effect-variables") {
+    await applyEffectVariables(msg.layerId, msg.variableBindings);
+  } else if (msg.type === "apply-bulk-effect-variables") {
+    await applyBulkEffectVariables(msg.layerIds, msg.effectToVariableMap);
   } else if (msg.type === "export-debug-data") {
     exportDebugData();
   } else if (msg.type === "close") {
@@ -647,7 +675,20 @@ function checkStyleUsage(node: SceneNode): string[] {
     typeof node.cornerRadius === "number" &&
     node.cornerRadius > 0
   ) {
-    if (!node.boundVariables || !("cornerRadius" in node.boundVariables)) {
+    // Check if any corner radius properties are bound to variables
+    const cornerRadiusProperties = [
+      "cornerRadius",
+      "topLeftRadius",
+      "topRightRadius",
+      "bottomLeftRadius",
+      "bottomRightRadius",
+    ];
+
+    const hasBoundCornerRadius =
+      node.boundVariables &&
+      cornerRadiusProperties.some((prop) => prop in node.boundVariables!);
+
+    if (!hasBoundCornerRadius) {
       issues.push(
         `🔴 Uses local corner radius (${node.cornerRadius}px) instead of spacing token`
       );
@@ -1205,4 +1246,514 @@ async function analyzeLayerForDebug(node: SceneNode, path: string[]) {
   }
 
   return layerData;
+}
+
+// Spacing extraction and application functions
+function extractSpacingFromLayer(node: SceneNode): any[] {
+  const spacing: any[] = [];
+
+  // Extract corner radius
+  if ("cornerRadius" in node && (node as any).cornerRadius !== undefined) {
+    spacing.push({
+      type: "cornerRadius",
+      value: (node as any).cornerRadius,
+      property: "cornerRadius",
+    });
+  }
+
+  // Extract padding and gap values (only for Auto Layout frames)
+  if (node.type === "FRAME" && "layoutMode" in node) {
+    const frameNode = node as FrameNode;
+    if (frameNode.layoutMode !== "NONE") {
+      // Extract padding for Auto Layout frames with smart grouping
+      const paddingLeft = frameNode.paddingLeft;
+      const paddingRight = frameNode.paddingRight;
+      const paddingTop = frameNode.paddingTop;
+      const paddingBottom = frameNode.paddingBottom;
+
+      // Check for horizontal padding (left = right)
+      if (
+        paddingLeft !== undefined &&
+        paddingRight !== undefined &&
+        paddingLeft === paddingRight
+      ) {
+        spacing.push({
+          type: "paddingHorizontal",
+          value: paddingLeft,
+          property: "paddingHorizontal",
+          properties: ["paddingLeft", "paddingRight"], // Track which properties this applies to
+        });
+      } else {
+        // Individual left/right padding
+        if (paddingLeft !== undefined) {
+          spacing.push({
+            type: "paddingLeft",
+            value: paddingLeft,
+            property: "paddingLeft",
+          });
+        }
+        if (paddingRight !== undefined) {
+          spacing.push({
+            type: "paddingRight",
+            value: paddingRight,
+            property: "paddingRight",
+          });
+        }
+      }
+
+      // Check for vertical padding (top = bottom)
+      if (
+        paddingTop !== undefined &&
+        paddingBottom !== undefined &&
+        paddingTop === paddingBottom
+      ) {
+        spacing.push({
+          type: "paddingVertical",
+          value: paddingTop,
+          property: "paddingVertical",
+          properties: ["paddingTop", "paddingBottom"], // Track which properties this applies to
+        });
+      } else {
+        // Individual top/bottom padding
+        if (paddingTop !== undefined) {
+          spacing.push({
+            type: "paddingTop",
+            value: paddingTop,
+            property: "paddingTop",
+          });
+        }
+        if (paddingBottom !== undefined) {
+          spacing.push({
+            type: "paddingBottom",
+            value: paddingBottom,
+            property: "paddingBottom",
+          });
+        }
+      }
+
+      // Extract item spacing (gap) for Auto Layout frames
+      if (frameNode.itemSpacing !== undefined) {
+        spacing.push({
+          type: "itemSpacing",
+          value: frameNode.itemSpacing,
+          property: "itemSpacing",
+        });
+      }
+    }
+  }
+
+  return spacing;
+}
+
+function extractEffectsFromLayer(node: SceneNode): any[] {
+  const effects: any[] = [];
+
+  if ("effects" in node && node.effects && Array.isArray(node.effects)) {
+    node.effects.forEach((effect, index) => {
+      if (effect.type === "DROP_SHADOW" || effect.type === "INNER_SHADOW") {
+        effects.push({
+          type: effect.type,
+          radius: (effect as any).radius || 0,
+          index,
+          property: "effects",
+        });
+      } else if (
+        effect.type === "LAYER_BLUR" ||
+        effect.type === "BACKGROUND_BLUR"
+      ) {
+        effects.push({
+          type: effect.type,
+          radius: (effect as any).radius || 0,
+          index,
+          property: "effects",
+        });
+      }
+    });
+  }
+
+  return effects;
+}
+
+async function applySpacingVariables(
+  layerId: string,
+  variableBindings: any[]
+): Promise<void> {
+  const node = await figma.getNodeByIdAsync(layerId);
+  if (!node) {
+    figma.ui.postMessage({
+      type: "error",
+      message: "Cannot apply variables to this layer",
+    });
+    return;
+  }
+
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+    const existingVariables = await figma.variables.getLocalVariablesAsync();
+
+    // Apply each spacing variable
+    for (const binding of variableBindings) {
+      // Find or create variable
+      let variable = existingVariables.find(
+        (v) => v.name === binding.variableName
+      );
+
+      if (!variable) {
+        variable = figma.variables.createVariable(
+          binding.variableName,
+          collection,
+          "FLOAT"
+        );
+      }
+
+      // Set variable value
+      variable.setValueForMode(modeId, binding.value);
+
+      // Bind the property
+      if (binding.type === "cornerRadius") {
+        (node as any).setBoundVariable("cornerRadius", variable);
+      } else if (
+        binding.type.startsWith("padding") ||
+        binding.type === "itemSpacing"
+      ) {
+        // Only bind padding and itemSpacing to Auto Layout frames
+        if (node.type === "FRAME" && "layoutMode" in node) {
+          const frameNode = node as FrameNode;
+          if (frameNode.layoutMode !== "NONE") {
+            // Handle grouped padding properties
+            if (binding.properties && Array.isArray(binding.properties)) {
+              // Apply the same variable to multiple properties (e.g., paddingHorizontal -> paddingLeft + paddingRight)
+              for (const property of binding.properties) {
+                (node as any).setBoundVariable(property, variable);
+              }
+            } else if (binding.type === "paddingHorizontal") {
+              // Apply to both left and right padding
+              (node as any).setBoundVariable("paddingLeft", variable);
+              (node as any).setBoundVariable("paddingRight", variable);
+            } else if (binding.type === "paddingVertical") {
+              // Apply to both top and bottom padding
+              (node as any).setBoundVariable("paddingTop", variable);
+              (node as any).setBoundVariable("paddingBottom", variable);
+            } else {
+              // Apply to single property
+              (node as any).setBoundVariable(binding.type, variable);
+            }
+          }
+        }
+      }
+    }
+
+    figma.ui.postMessage({
+      type: "fix-applied",
+      message: `Applied ${variableBindings.length} spacing variables`,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply spacing variables: ${error}`,
+    });
+  }
+}
+
+async function applyBulkSpacingVariables(
+  layerIds: string[],
+  spacingToVariableMap: Record<string, string>
+): Promise<void> {
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+    const existingVariables = await figma.variables.getLocalVariablesAsync();
+
+    // Create all variables first
+    const variableCache = new Map<string, Variable>();
+
+    for (const [spacingKey, variableName] of Object.entries(
+      spacingToVariableMap
+    )) {
+      let variable = variableCache.get(variableName);
+
+      if (!variable) {
+        variable = existingVariables.find((v) => v.name === variableName);
+
+        if (!variable) {
+          // Parse value from key (format: "cornerRadius-6" or "paddingLeft-16")
+          const [type, valueStr] = spacingKey.split("-");
+          const value = parseFloat(valueStr);
+
+          variable = figma.variables.createVariable(
+            variableName,
+            collection,
+            "FLOAT"
+          );
+          variable.setValueForMode(modeId, value);
+        }
+
+        variableCache.set(variableName, variable);
+      }
+    }
+
+    // Apply variables to all layers
+    for (const layerId of layerIds) {
+      const node = await figma.getNodeByIdAsync(layerId);
+      if (!node) continue;
+
+      // Apply each spacing variable
+      for (const [spacingKey, variableName] of Object.entries(
+        spacingToVariableMap
+      )) {
+        const variable = variableCache.get(variableName);
+        if (!variable) continue;
+
+        const [type, valueStr] = spacingKey.split("-");
+
+        try {
+          if (type === "cornerRadius") {
+            (node as any).setBoundVariable("cornerRadius", variable);
+          } else if (type.startsWith("padding") || type === "itemSpacing") {
+            // Only bind padding and itemSpacing to Auto Layout frames
+            if (node.type === "FRAME" && "layoutMode" in node) {
+              const frameNode = node as FrameNode;
+              if (frameNode.layoutMode !== "NONE") {
+                // Handle grouped padding properties
+                if (type === "paddingHorizontal") {
+                  // Apply to both left and right padding
+                  (node as any).setBoundVariable("paddingLeft", variable);
+                  (node as any).setBoundVariable("paddingRight", variable);
+                } else if (type === "paddingVertical") {
+                  // Apply to both top and bottom padding
+                  (node as any).setBoundVariable("paddingTop", variable);
+                  (node as any).setBoundVariable("paddingBottom", variable);
+                } else {
+                  // Apply to single property
+                  (node as any).setBoundVariable(type, variable);
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.warn(`Failed to bind ${type} on layer ${layerId}:`, error);
+        }
+      }
+    }
+
+    figma.ui.postMessage({
+      type: "fix-applied",
+      message: `Applied spacing variables to ${layerIds.length} layers`,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply bulk spacing variables: ${error}`,
+    });
+  }
+}
+
+async function applyEffectVariables(
+  layerId: string,
+  variableBindings: any[]
+): Promise<void> {
+  const node = await figma.getNodeByIdAsync(layerId);
+  if (!node) {
+    figma.ui.postMessage({
+      type: "error",
+      message: "Cannot apply variables to this layer",
+    });
+    return;
+  }
+
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+    const existingVariables = await figma.variables.getLocalVariablesAsync();
+
+    // Apply each effect variable
+    for (const binding of variableBindings) {
+      // Find or create variable
+      let variable = existingVariables.find(
+        (v) => v.name === binding.variableName
+      );
+
+      if (!variable) {
+        variable = figma.variables.createVariable(
+          binding.variableName,
+          collection,
+          "FLOAT"
+        );
+      }
+
+      // Set variable value
+      variable.setValueForMode(modeId, binding.radius);
+
+      // Bind the effect property
+      if ("effects" in node && node.effects && node.effects[binding.index]) {
+        const effect = node.effects[binding.index];
+
+        // Try different property path formats for effect binding
+        const propertyPaths = [
+          `effects[${binding.index}].radius`,
+          `effects.${binding.index}.radius`,
+          `effects[${binding.index}].blur`,
+          `effects.${binding.index}.blur`,
+        ];
+
+        let bound = false;
+        for (const path of propertyPaths) {
+          try {
+            (node as any).setBoundVariable(path, variable);
+            console.log(
+              `Successfully bound effect variable using path: ${path}`
+            );
+            bound = true;
+            break;
+          } catch (error) {
+            console.log(`Failed to bind using path ${path}:`, error);
+          }
+        }
+
+        if (!bound) {
+          console.warn(
+            `Failed to bind effect variable for ${effect.type} at index ${binding.index}`
+          );
+        }
+      }
+    }
+
+    figma.ui.postMessage({
+      type: "fix-applied",
+      message: `Applied ${variableBindings.length} effect variables`,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply effect variables: ${error}`,
+    });
+  }
+}
+
+async function applyBulkEffectVariables(
+  layerIds: string[],
+  effectToVariableMap: Record<string, string>
+): Promise<void> {
+  try {
+    // Get or create variable collection
+    const collections =
+      await figma.variables.getLocalVariableCollectionsAsync();
+    const collection =
+      collections.length > 0
+        ? collections[0]
+        : figma.variables.createVariableCollection("Design System");
+
+    const modeId = collection.modes[0].modeId;
+    const existingVariables = await figma.variables.getLocalVariablesAsync();
+
+    // Create all variables first
+    const variableCache = new Map<string, Variable>();
+
+    for (const [effectKey, variableName] of Object.entries(
+      effectToVariableMap
+    )) {
+      let variable = variableCache.get(variableName);
+
+      if (!variable) {
+        variable = existingVariables.find((v) => v.name === variableName);
+
+        if (!variable) {
+          // Parse value from key (format: "DROP_SHADOW-10")
+          const [type, valueStr] = effectKey.split("-");
+          const value = parseFloat(valueStr);
+
+          variable = figma.variables.createVariable(
+            variableName,
+            collection,
+            "FLOAT"
+          );
+          variable.setValueForMode(modeId, value);
+        }
+
+        variableCache.set(variableName, variable);
+      }
+    }
+
+    // Apply variables to all layers
+    for (const layerId of layerIds) {
+      const node = await figma.getNodeByIdAsync(layerId);
+      if (!node || !("effects" in node) || !node.effects) continue;
+
+      // Apply each effect variable
+      for (const [effectKey, variableName] of Object.entries(
+        effectToVariableMap
+      )) {
+        const variable = variableCache.get(variableName);
+        if (!variable) continue;
+
+        const [type, valueStr] = effectKey.split("-");
+
+        // Find matching effect by type
+        const effectIndex = node.effects.findIndex(
+          (effect: any) => effect.type === type
+        );
+        if (effectIndex >= 0) {
+          const effect = node.effects[effectIndex];
+
+          // Try different property path formats for effect binding
+          const propertyPaths = [
+            `effects[${effectIndex}].radius`,
+            `effects.${effectIndex}.radius`,
+            `effects[${effectIndex}].blur`,
+            `effects.${effectIndex}.blur`,
+          ];
+
+          let bound = false;
+          for (const path of propertyPaths) {
+            try {
+              (node as any).setBoundVariable(path, variable);
+              console.log(
+                `Successfully bound effect variable using path: ${path}`
+              );
+              bound = true;
+              break;
+            } catch (error) {
+              console.log(`Failed to bind using path ${path}:`, error);
+            }
+          }
+
+          if (!bound) {
+            console.warn(`Failed to bind effect ${type} on layer ${layerId}`);
+          }
+        }
+      }
+    }
+
+    figma.ui.postMessage({
+      type: "fix-applied",
+      message: `Applied effect variables to ${layerIds.length} layers`,
+    });
+  } catch (error) {
+    figma.ui.postMessage({
+      type: "error",
+      message: `Failed to apply bulk effect variables: ${error}`,
+    });
+  }
 }

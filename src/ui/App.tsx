@@ -62,6 +62,7 @@ function App() {
   const [selectedFixLayer, setSelectedFixLayer] = useState<any>(null);
   const [showDebugView, setShowDebugView] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
+  const [showSuccessMessage, setShowSuccessMessage] = useState(false);
 
   useEffect(() => {
     // Request current settings on mount
@@ -89,8 +90,9 @@ function App() {
       } else if (msg.type === "fix-applied") {
         setShowFixWizard(false);
         setSelectedFixLayer(null);
-        // Re-run analysis to update results
-        handleAnalyze();
+        // Show success message and hide it after 3 seconds
+        setShowSuccessMessage(true);
+        setTimeout(() => setShowSuccessMessage(false), 3000);
       } else if (msg.type === "debug-data-exported") {
         setDebugData(msg.debugData);
         setShowDebugView(true);
@@ -161,6 +163,13 @@ function App() {
         <ErrorMessage message={error} onDismiss={() => setError(null)} />
       )}
 
+      {showSuccessMessage && (
+        <div className="success-message">
+          ✅ Fixes applied successfully! Click "🔄 Refresh" to see updated
+          compliance status.
+        </div>
+      )}
+
       {isAnalyzing && <ProgressIndicator progress={progress} />}
 
       {!isAnalyzing && analysis && (
@@ -199,6 +208,7 @@ function App() {
                   setShowFixWizard(true);
                 }}
                 onExportDebug={handleExportDebug}
+                onRefresh={handleAnalyze}
               />
             )}
             {view === "settings" && (
