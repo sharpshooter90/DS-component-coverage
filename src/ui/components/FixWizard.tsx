@@ -16,7 +16,7 @@ interface FixWizardProps {
 }
 
 interface StyleIssue {
-  type: "color" | "text" | "spacing" | "effect";
+  type: "color" | "text" | "spacing" | "effect" | "layout";
   description: string;
   fixable: boolean;
 }
@@ -65,6 +65,9 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
   const [effectStyleNames, setEffectStyleNames] = useState<
     Record<number, string>
   >({});
+  const [autoLayoutDirection, setAutoLayoutDirection] = useState<
+    "AUTO" | "VERTICAL" | "HORIZONTAL"
+  >("AUTO");
 
   // Parse and categorize issues from all layers - only show fixable ones
   const parseIssues = (): StyleIssue[] => {
@@ -114,6 +117,15 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
           description: issue,
           fixable: true,
         });
+      } else if (
+        issue.includes("🔴") &&
+        issue.includes("Frame not using Auto Layout")
+      ) {
+        categorizedIssues.push({
+          type: "layout",
+          description: issue,
+          fixable: true,
+        });
       }
     });
 
@@ -135,6 +147,8 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         return "📏 Spacing & Radius";
       case "effect":
         return "✨ Effects";
+      case "layout":
+        return "📐 Layout";
       default:
         return type;
     }
@@ -150,6 +164,8 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         return "Bind padding, margin, and corner radius to spacing tokens";
       case "effect":
         return "Promote local effects into shared effect styles";
+      case "layout":
+        return "Convert frames to Auto Layout";
       default:
         return "Fix style issues";
     }
@@ -340,6 +356,12 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
     }
   }, [allEffects, layers]);
 
+  const layoutLayers = layers.filter((layer) =>
+    layer.issues.some((issue) =>
+      issue.includes("Frame not using Auto Layout")
+    )
+  );
+
   const rgbToHex = (color: RGB): string => {
     const toHex = (n: number) =>
       Math.round(n * 255)
@@ -479,6 +501,7 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
       const colorToVariableMap = new Map<string, string>();
       const spacingToVariableMap = new Map<string, string>();
       const effectAssignments: BulkEffectStyleAssignment[] = [];
+      let layoutIds: string[] = [];
 
       // Handle colors
       if (selectedIssueTypes.has("color")) {
@@ -523,6 +546,10 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
         });
       }
 
+      if (selectedIssueTypes.has("layout")) {
+        layoutIds = layoutLayers.map((layer) => layer.id);
+      }
+
       // Send bulk update requests
       if (colorToVariableMap.size > 0) {
         window.parent.postMessage(
@@ -557,6 +584,22 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
               type: "apply-bulk-effect-styles",
               layerIds: layers.map((l) => l.id),
               effectAssignments,
+            },
+          },
+          "*"
+        );
+      }
+
+      if (layoutIds.length > 0) {
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "convert-bulk-auto-layout",
+              layerIds: layoutIds,
+              direction:
+                autoLayoutDirection === "AUTO"
+                  ? undefined
+                  : autoLayoutDirection,
             },
           },
           "*"
@@ -640,6 +683,22 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
           "*"
         );
       }
+
+      if (selectedIssueTypes.has("layout") && layoutLayers.length > 0) {
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "convert-to-auto-layout",
+              layerId: layoutLayers[0].id,
+              direction:
+                autoLayoutDirection === "AUTO"
+                  ? undefined
+                  : autoLayoutDirection,
+            },
+          },
+          "*"
+        );
+      }
     }
   };
 
@@ -654,7 +713,8 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
           (!isBulkMode && allSpacing.size > 0))) ||
       (selectedIssueTypes.has("effect") &&
         ((isBulkMode && uniqueEffects.length > 0) ||
-          (!isBulkMode && allEffects.size > 0))));
+          (!isBulkMode && allEffects.size > 0))) ||
+      (selectedIssueTypes.has("layout") && layoutLayers.length > 0));
 
   return (
     <div className="fix-wizard-overlay" onClick={onClose}>
@@ -1096,6 +1156,59 @@ const FixWizard: React.FC<FixWizardProps> = ({ layers, onClose }) => {
                       </div>
                     );
                   })
+                )}
+              </>
+            )}
+
+            {selectedIssueTypes.has("layout") && (
+              <>
+                <h5>📐 Layout</h5>
+                {layoutLayers.length === 0 ? (
+                  <div className="info-message">
+                    No frames with Auto Layout fixes found
+                  </div>
+                ) : (
+                  <>
+                    <div className="info-message">
+                      {isBulkMode
+                        ? `Convert ${layoutLayers.length} frame${
+                            layoutLayers.length === 1 ? "" : "s"
+                          } to Auto Layout`
+                        : `Convert "${layoutLayers[0].name}" to Auto Layout`}
+                    </div>
+                    <div className="layout-options">
+                      <label>
+                        <input
+                          type="radio"
+                          name="auto-layout-direction"
+                          value="AUTO"
+                          checked={autoLayoutDirection === "AUTO"}
+                          onChange={() => setAutoLayoutDirection("AUTO")}
+                        />
+                        Auto (detect direction)
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="auto-layout-direction"
+                          value="VERTICAL"
+                          checked={autoLayoutDirection === "VERTICAL"}
+                          onChange={() => setAutoLayoutDirection("VERTICAL")}
+                        />
+                        Vertical
+                      </label>
+                      <label>
+                        <input
+                          type="radio"
+                          name="auto-layout-direction"
+                          value="HORIZONTAL"
+                          checked={autoLayoutDirection === "HORIZONTAL"}
+                          onChange={() => setAutoLayoutDirection("HORIZONTAL")}
+                        />
+                        Horizontal
+                      </label>
+                    </div>
+                  </>
                 )}
               </>
             )}

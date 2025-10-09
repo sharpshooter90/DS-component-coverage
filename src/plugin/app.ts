@@ -11,6 +11,10 @@ import {
   nodeSupportsEffectStyles,
   serializeEffectSnapshot,
 } from "./utils/effects";
+import {
+  AutoLayoutConversionOptions,
+  convertFrameNodeToAutoLayout,
+} from "./utils/autoLayout";
 
 /// <reference types="@figma/plugin-typings" />
 
@@ -33,6 +37,16 @@ interface CoverageSummary {
 interface CoverageDetails {
   byType: TypeBreakdown;
   nonCompliantLayers: NonCompliantLayer[];
+  suggestions?: {
+    autoLayout?: AutoLayoutSuggestion[];
+  };
+}
+
+interface AutoLayoutSuggestion {
+  id: string;
+  name: string;
+  type: string;
+  path: string;
 }
 
 interface TypeBreakdown {
@@ -134,6 +148,10 @@ figma.ui.onmessage = async (msg) => {
     await applyEffectStyles(msg.layerId, msg.styleBindings);
   } else if (msg.type === "apply-bulk-effect-styles") {
     await applyBulkEffectStyles(msg.layerIds, msg.effectAssignments);
+  } else if (msg.type === "convert-to-auto-layout") {
+    await convertFrameToAutoLayoutById(msg.layerId, msg.direction);
+  } else if (msg.type === "convert-bulk-auto-layout") {
+    await convertFramesToAutoLayout(msg.layerIds, msg.direction);
   } else if (msg.type === "export-debug-data") {
     exportDebugData();
   } else if (msg.type === "close") {
@@ -196,6 +214,7 @@ async function analyzeNode(node: SceneNode): Promise<CoverageAnalysis> {
     compliantLayers: 0,
     byType: {} as TypeBreakdown,
     nonCompliantLayers: [] as NonCompliantLayer[],
+    autoLayoutSuggestions: new Map<string, AutoLayoutSuggestion>(),
   };
 
   const frameName = node.name;
@@ -220,6 +239,9 @@ async function analyzeNode(node: SceneNode): Promise<CoverageAnalysis> {
   const details: CoverageDetails = {
     byType: stats.byType,
     nonCompliantLayers: stats.nonCompliantLayers,
+    suggestions: {
+      autoLayout: Array.from(stats.autoLayoutSuggestions.values()),
+    },
   };
 
   return {
@@ -420,6 +442,11 @@ async function analyzeLayer(
     }
   }
 
+  const isFrameAutoLayout =
+    node.type === "FRAME" &&
+    "layoutMode" in node &&
+    (node as FrameNode).layoutMode !== "NONE";
+
   if (isCompliant) {
     stats.compliantLayers++;
     stats.byType[nodeType].compliant++;
@@ -442,6 +469,15 @@ async function analyzeLayer(
   stats.byType[nodeType].percentage = Math.round(
     (stats.byType[nodeType].compliant / stats.byType[nodeType].total) * 100
   );
+
+  if (node.type === "FRAME" && !isFrameAutoLayout) {
+    stats.autoLayoutSuggestions.set(node.id, {
+      id: node.id,
+      name: node.name,
+      type: node.type,
+      path: path.join(" > "),
+    });
+  }
 }
 
 async function checkComponentUsage(node: SceneNode): Promise<string | null> {
@@ -718,27 +754,43 @@ function checkStyleUsage(node: SceneNode): string[] {
   }
 
   // Check padding/margin (for auto-layout)
-  if ("paddingLeft" in node) {
+  if (
+    node.type === "FRAME" &&
+    "layoutMode" in node &&
+    (node as FrameNode).layoutMode !== "NONE"
+  ) {
     const paddingProps = [
       "paddingLeft",
       "paddingRight",
       "paddingTop",
       "paddingBottom",
-    ];
+    ] as const;
+
+    const frameNode = node as FrameNode;
+
     const localPaddingProps = paddingProps.filter((prop) => {
-      const value = (node as any)[prop];
+      const value = (frameNode as any)[prop];
       const hasBoundVariable =
-        node.boundVariables && prop in node.boundVariables;
+        frameNode.boundVariables && prop in frameNode.boundVariables;
       return value !== 0 && !hasBoundVariable;
     });
 
     if (localPaddingProps.length > 0) {
       issues.push(`🔴 Uses local padding values instead of spacing tokens`);
     } else if (
-      node.boundVariables &&
-      paddingProps.some((prop) => prop in node.boundVariables!)
+      frameNode.boundVariables &&
+      paddingProps.some((prop) => prop in frameNode.boundVariables!)
     ) {
       issues.push(`✅ Padding bound to variables`);
+    }
+  }
+
+  if (node.type === "FRAME") {
+    const frameNode = node as FrameNode;
+    if (frameNode.layoutMode === "NONE") {
+      issues.push(`💡 Frame can use Auto Layout`);
+    } else {
+      issues.push(`✅ Uses Auto Layout`);
     }
   }
 
@@ -1738,6 +1790,122 @@ async function applyBulkEffectStyles(
     postMessageToUI({
       type: "error",
       message: `Failed to apply effect styles: ${error}`,
+    });
+  }
+}
+
+type RawAutoLayoutDirection = "HORIZONTAL" | "VERTICAL" | undefined;
+
+function toAutoLayoutOptions(
+  direction: RawAutoLayoutDirection
+): AutoLayoutConversionOptions {
+  if (direction === "HORIZONTAL" || direction === "VERTICAL") {
+    return { direction };
+  }
+  return {};
+}
+
+async function convertFrameToAutoLayoutById(
+  layerId: string,
+  direction?: RawAutoLayoutDirection
+): Promise<void> {
+  const node = await figma.getNodeByIdAsync(layerId);
+  if (!node || node.type !== "FRAME") {
+    postMessageToUI({
+      type: "error",
+      message: "Cannot convert this layer to Auto Layout",
+    });
+    return;
+  }
+
+  try {
+    const result = convertFrameNodeToAutoLayout(
+      node as FrameNode,
+      toAutoLayoutOptions(direction)
+    );
+
+    if (result.converted) {
+      postMessageToUI({
+        type: "fix-applied",
+        message: `Converted "${node.name}" to Auto Layout (${result.direction.toLowerCase()})`,
+      });
+      figma.notify(`✅ Converted ${node.name} to Auto Layout`);
+    } else {
+      postMessageToUI({
+        type: "fix-applied",
+        message: `"${node.name}" already uses Auto Layout`,
+      });
+    }
+  } catch (error) {
+    postMessageToUI({
+      type: "error",
+      message: `Failed to convert to Auto Layout: ${error}`,
+    });
+  }
+}
+
+async function convertFramesToAutoLayout(
+  layerIds: string[],
+  direction?: RawAutoLayoutDirection
+): Promise<void> {
+  try {
+    const options = toAutoLayoutOptions(direction);
+    let converted = 0;
+    let alreadyLayout = 0;
+    let skipped = 0;
+
+    for (const layerId of [...new Set(layerIds)]) {
+      const node = await figma.getNodeByIdAsync(layerId);
+      if (!node || node.type !== "FRAME") {
+        skipped++;
+        continue;
+      }
+
+      try {
+        const result = convertFrameNodeToAutoLayout(
+          node as FrameNode,
+          options
+        );
+        if (result.converted) {
+          converted++;
+        } else {
+          alreadyLayout++;
+        }
+      } catch (error) {
+        console.warn(`Failed to convert frame ${node.id}:`, error);
+        skipped++;
+      }
+    }
+
+    if (converted > 0) {
+      postMessageToUI({
+        type: "fix-applied",
+        message: `Converted ${converted} frame${
+          converted === 1 ? "" : "s"
+        } to Auto Layout`,
+      });
+      figma.notify(
+        `✅ Converted ${converted} frame${converted === 1 ? "" : "s"} to Auto Layout`
+      );
+    } else {
+      postMessageToUI({
+        type: "fix-applied",
+        message:
+          alreadyLayout > 0
+            ? "Selected frames already use Auto Layout"
+            : "No frames were converted to Auto Layout",
+      });
+    }
+
+    if (skipped > 0) {
+      figma.notify(
+        `⚠️ Skipped ${skipped} layer${skipped === 1 ? "" : "s"} that cannot be converted`
+      );
+    }
+  } catch (error) {
+    postMessageToUI({
+      type: "error",
+      message: `Failed to convert frames to Auto Layout: ${error}`,
     });
   }
 }
