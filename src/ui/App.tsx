@@ -181,7 +181,16 @@ function App() {
   return (
     <div className="app">
       <header className="header">
-        <h1 className="title">DS Coverage Analyzer</h1>
+        {analysis ? (
+          <div className="title-with-frame">
+            <div className="title-label">Analyzing Frame:</div>
+            <h1 className="title frame-name">
+              {analysis.summary.analyzedFrameName}
+            </h1>
+          </div>
+        ) : (
+          <h1 className="title">DS Coverage Analyzer</h1>
+        )}
         <div className="header-actions">
           <button
             className="btn btn-primary"
