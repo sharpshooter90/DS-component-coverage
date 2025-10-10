@@ -178,6 +178,20 @@ function App() {
     );
   };
 
+  const handleExportReportToCanvas = () => {
+    if (!analysis) return;
+
+    window.parent.postMessage(
+      {
+        pluginMessage: {
+          type: "export-report-to-canvas",
+          reportData: analysis,
+        },
+      },
+      "*"
+    );
+  };
+
   return (
     <div className="app">
       <header className="header">
@@ -192,6 +206,15 @@ function App() {
           <h1 className="title">DS Coverage Analyzer</h1>
         )}
         <div className="header-actions">
+          {analysis && !isAnalyzing && (
+            <button
+              className="btn btn-secondary"
+              onClick={handleExportReportToCanvas}
+              title="Export analysis report to Figma canvas"
+            >
+              📊 Add Report to Canvas
+            </button>
+          )}
           <button
             className="btn btn-primary"
             onClick={handleAnalyze}

@@ -174,6 +174,8 @@ figma.ui.onmessage = async (msg) => {
     await convertFramesToAutoLayout(msg.layerIds, msg.direction);
   } else if (msg.type === "export-debug-data") {
     exportDebugData();
+  } else if (msg.type === "export-report-to-canvas") {
+    await exportReportToCanvas(msg.reportData);
   } else if (msg.type === "subscribe-selection") {
     selectionSubscriptionCount++;
     if (selectionSubscriptionCount === 1) {
@@ -2025,5 +2027,546 @@ async function convertFramesToAutoLayout(
       type: "error",
       message: `Failed to convert frames to Auto Layout: ${error}`,
     });
+  }
+}
+
+/**
+ * Export the analysis report as a visual presentation on the canvas
+ */
+async function exportReportToCanvas(reportData: any) {
+  try {
+    // Load fonts first
+    await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+    await figma.loadFontAsync({ family: "Inter", style: "Medium" });
+    await figma.loadFontAsync({ family: "Inter", style: "Bold" });
+    await figma.loadFontAsync({ family: "Inter", style: "Italic" });
+
+    const { summary, details } = reportData;
+
+    // Create main report frame
+    const reportFrame = figma.createFrame();
+    reportFrame.name = `DS Coverage Report - ${summary.analyzedFrameName}`;
+    reportFrame.resize(1200, 1600);
+    reportFrame.x = figma.viewport.center.x + 100;
+    reportFrame.y = figma.viewport.center.y - 800;
+    reportFrame.fills = [
+      { type: "SOLID", color: { r: 0.98, g: 0.98, b: 0.98 } },
+    ];
+    reportFrame.layoutMode = "VERTICAL";
+    reportFrame.paddingTop = 40;
+    reportFrame.paddingBottom = 40;
+    reportFrame.paddingLeft = 40;
+    reportFrame.paddingRight = 40;
+    reportFrame.itemSpacing = 32;
+    reportFrame.primaryAxisSizingMode = "AUTO";
+    reportFrame.counterAxisSizingMode = "FIXED";
+
+    // Header Section
+    const headerFrame = createHeaderSection(summary);
+    reportFrame.appendChild(headerFrame);
+
+    // Summary Section
+    const summaryFrame = createSummarySection(summary);
+    reportFrame.appendChild(summaryFrame);
+
+    // Coverage by Type Section
+    const coverageByTypeFrame = createCoverageByTypeSection(details.byType);
+    reportFrame.appendChild(coverageByTypeFrame);
+
+    // Non-Compliant Layers Section
+    if (details.nonCompliantLayers && details.nonCompliantLayers.length > 0) {
+      const nonCompliantFrame = createNonCompliantLayersSection(
+        details.nonCompliantLayers
+      );
+      reportFrame.appendChild(nonCompliantFrame);
+    }
+
+    // Auto Layout Suggestions Section
+    if (
+      details.suggestions?.autoLayout &&
+      details.suggestions.autoLayout.length > 0
+    ) {
+      const autoLayoutFrame = createAutoLayoutSuggestionsSection(
+        details.suggestions.autoLayout
+      );
+      reportFrame.appendChild(autoLayoutFrame);
+    }
+
+    // Select and zoom to the report
+    figma.currentPage.selection = [reportFrame];
+    figma.viewport.scrollAndZoomIntoView([reportFrame]);
+
+    figma.notify("✅ Report added to canvas successfully!");
+
+    postMessageToUI({
+      type: "fix-applied",
+      message: "Report exported to canvas successfully",
+    });
+  } catch (error) {
+    console.error("Error exporting report to canvas:", error);
+    postMessageToUI({
+      type: "error",
+      message: `Failed to export report to canvas: ${error}`,
+    });
+  }
+}
+
+function createHeaderSection(summary: any): FrameNode {
+  const headerFrame = figma.createFrame();
+  headerFrame.name = "Header";
+  headerFrame.resize(1120, 120);
+  headerFrame.fills = [
+    {
+      type: "SOLID",
+      color: { r: 0.26, g: 0.54, b: 1 }, // Accent blue
+    },
+  ];
+  headerFrame.layoutMode = "VERTICAL";
+  headerFrame.paddingTop = 24;
+  headerFrame.paddingBottom = 24;
+  headerFrame.paddingLeft = 32;
+  headerFrame.paddingRight = 32;
+  headerFrame.itemSpacing = 8;
+  headerFrame.cornerRadius = 12;
+
+  // Title
+  const titleText = figma.createText();
+  titleText.characters = "📊 DS Coverage Analysis Report";
+  titleText.fontSize = 28;
+  titleText.fontName = { family: "Inter", style: "Bold" };
+  titleText.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+  headerFrame.appendChild(titleText);
+
+  // Frame name
+  const frameNameText = figma.createText();
+  frameNameText.characters = `Frame: ${summary.analyzedFrameName}`;
+  frameNameText.fontSize = 16;
+  frameNameText.fontName = { family: "Inter", style: "Medium" };
+  frameNameText.fills = [{ type: "SOLID", color: { r: 0.9, g: 0.95, b: 1 } }];
+  headerFrame.appendChild(frameNameText);
+
+  // Date
+  const dateText = figma.createText();
+  dateText.characters = `Generated: ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}`;
+  dateText.fontSize = 12;
+  dateText.fontName = { family: "Inter", style: "Regular" };
+  dateText.fills = [{ type: "SOLID", color: { r: 0.8, g: 0.9, b: 1 } }];
+  headerFrame.appendChild(dateText);
+
+  return headerFrame;
+}
+
+function createSummarySection(summary: any): FrameNode {
+  const summaryFrame = figma.createFrame();
+  summaryFrame.name = "Summary";
+  summaryFrame.resize(1120, 200);
+  summaryFrame.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+  summaryFrame.layoutMode = "VERTICAL";
+  summaryFrame.paddingTop = 24;
+  summaryFrame.paddingBottom = 24;
+  summaryFrame.paddingLeft = 32;
+  summaryFrame.paddingRight = 32;
+  summaryFrame.itemSpacing = 16;
+  summaryFrame.cornerRadius = 12;
+  summaryFrame.primaryAxisSizingMode = "AUTO";
+  summaryFrame.effects = [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 2 },
+      radius: 8,
+      visible: true,
+      blendMode: "NORMAL",
+    },
+  ];
+
+  // Section title
+  const titleText = figma.createText();
+  titleText.characters = "Summary";
+  titleText.fontSize = 20;
+  titleText.fontName = { family: "Inter", style: "Bold" };
+  titleText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  summaryFrame.appendChild(titleText);
+
+  // Stats grid
+  const statsGrid = figma.createFrame();
+  statsGrid.name = "Stats Grid";
+  statsGrid.resize(1056, 100);
+  statsGrid.fills = [];
+  statsGrid.layoutMode = "HORIZONTAL";
+  statsGrid.itemSpacing = 16;
+  statsGrid.primaryAxisSizingMode = "AUTO";
+
+  const stats = [
+    {
+      label: "Overall Score",
+      value: `${summary.overallScore}%`,
+      color: getScoreColor(summary.overallScore),
+    },
+    {
+      label: "Component Coverage",
+      value: `${summary.componentCoverage}%`,
+      color: getScoreColor(summary.componentCoverage),
+    },
+    {
+      label: "Token Coverage",
+      value: `${summary.tokenCoverage}%`,
+      color: getScoreColor(summary.tokenCoverage),
+    },
+    {
+      label: "Style Coverage",
+      value: `${summary.styleCoverage}%`,
+      color: getScoreColor(summary.styleCoverage),
+    },
+  ];
+
+  stats.forEach((stat) => {
+    const statCard = createStatCard(stat.label, stat.value, stat.color);
+    statsGrid.appendChild(statCard);
+  });
+
+  summaryFrame.appendChild(statsGrid);
+
+  // Layer counts
+  const countsText = figma.createText();
+  countsText.characters = `${summary.compliantLayers} of ${summary.totalLayers} layers are compliant`;
+  countsText.fontSize = 14;
+  countsText.fontName = { family: "Inter", style: "Medium" };
+  countsText.fills = [{ type: "SOLID", color: { r: 0.4, g: 0.4, b: 0.4 } }];
+  summaryFrame.appendChild(countsText);
+
+  return summaryFrame;
+}
+
+function createStatCard(label: string, value: string, color: RGB): FrameNode {
+  const card = figma.createFrame();
+  card.name = label;
+  card.resize(250, 80);
+  card.fills = [{ type: "SOLID", color: { r: 0.97, g: 0.98, b: 1 } }];
+  card.layoutMode = "VERTICAL";
+  card.paddingTop = 12;
+  card.paddingBottom = 12;
+  card.paddingLeft = 16;
+  card.paddingRight = 16;
+  card.itemSpacing = 4;
+  card.cornerRadius = 8;
+  card.strokeWeight = 2;
+  card.strokes = [{ type: "SOLID", color }];
+
+  const valueText = figma.createText();
+  valueText.characters = value;
+  valueText.fontSize = 24;
+  valueText.fontName = { family: "Inter", style: "Bold" };
+  valueText.fills = [{ type: "SOLID", color }];
+  card.appendChild(valueText);
+
+  const labelText = figma.createText();
+  labelText.characters = label;
+  labelText.fontSize = 12;
+  labelText.fontName = { family: "Inter", style: "Medium" };
+  labelText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+  card.appendChild(labelText);
+
+  return card;
+}
+
+function createCoverageByTypeSection(byType: any): FrameNode {
+  const section = figma.createFrame();
+  section.name = "Coverage by Type";
+  section.resize(1120, 300);
+  section.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+  section.layoutMode = "VERTICAL";
+  section.paddingTop = 24;
+  section.paddingBottom = 24;
+  section.paddingLeft = 32;
+  section.paddingRight = 32;
+  section.itemSpacing = 16;
+  section.cornerRadius = 12;
+  section.primaryAxisSizingMode = "AUTO";
+  section.effects = [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 2 },
+      radius: 8,
+      visible: true,
+      blendMode: "NORMAL",
+    },
+  ];
+
+  // Section title
+  const titleText = figma.createText();
+  titleText.characters = "Coverage by Layer Type";
+  titleText.fontSize = 20;
+  titleText.fontName = { family: "Inter", style: "Bold" };
+  titleText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  section.appendChild(titleText);
+
+  // Type rows
+  Object.entries(byType).forEach(([type, data]: [string, any]) => {
+    const row = createTypeRow(type, data);
+    section.appendChild(row);
+  });
+
+  return section;
+}
+
+function createTypeRow(type: string, data: any): FrameNode {
+  const row = figma.createFrame();
+  row.name = type;
+  row.resize(1056, 60);
+  row.fills = [{ type: "SOLID", color: { r: 0.98, g: 0.98, b: 0.98 } }];
+  row.layoutMode = "HORIZONTAL";
+  row.paddingTop = 12;
+  row.paddingBottom = 12;
+  row.paddingLeft = 16;
+  row.paddingRight = 16;
+  row.itemSpacing = 16;
+  row.primaryAxisAlignItems = "CENTER";
+  row.counterAxisAlignItems = "CENTER";
+  row.cornerRadius = 6;
+
+  // Type name
+  const typeText = figma.createText();
+  typeText.characters = type;
+  typeText.fontSize = 14;
+  typeText.fontName = { family: "Inter", style: "Medium" };
+  typeText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  typeText.layoutGrow = 1;
+  row.appendChild(typeText);
+
+  // Progress bar
+  const progressBar = createProgressBar(data.percentage);
+  row.appendChild(progressBar);
+
+  // Stats
+  const statsText = figma.createText();
+  statsText.characters = `${data.compliant}/${data.total} (${data.percentage}%)`;
+  statsText.fontSize = 14;
+  statsText.fontName = { family: "Inter", style: "Medium" };
+  statsText.fills = [{ type: "SOLID", color: getScoreColor(data.percentage) }];
+  row.appendChild(statsText);
+
+  return row;
+}
+
+function createProgressBar(percentage: number): FrameNode {
+  const container = figma.createFrame();
+  container.name = "Progress Bar";
+  container.resize(200, 8);
+  container.fills = [{ type: "SOLID", color: { r: 0.9, g: 0.9, b: 0.9 } }];
+  container.cornerRadius = 4;
+  container.clipsContent = true;
+
+  const fill = figma.createFrame();
+  fill.name = "Fill";
+  fill.resize((200 * percentage) / 100, 8);
+  fill.fills = [{ type: "SOLID", color: getScoreColor(percentage) }];
+  fill.cornerRadius = 4;
+  container.appendChild(fill);
+
+  return container;
+}
+
+function createNonCompliantLayersSection(layers: any[]): FrameNode {
+  const section = figma.createFrame();
+  section.name = "Non-Compliant Layers";
+  section.resize(1120, 400);
+  section.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+  section.layoutMode = "VERTICAL";
+  section.paddingTop = 24;
+  section.paddingBottom = 24;
+  section.paddingLeft = 32;
+  section.paddingRight = 32;
+  section.itemSpacing = 12;
+  section.cornerRadius = 12;
+  section.primaryAxisSizingMode = "AUTO";
+  section.effects = [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 2 },
+      radius: 8,
+      visible: true,
+      blendMode: "NORMAL",
+    },
+  ];
+
+  // Section title
+  const titleText = figma.createText();
+  titleText.characters = `❌ Non-Compliant Layers (${layers.length})`;
+  titleText.fontSize = 20;
+  titleText.fontName = { family: "Inter", style: "Bold" };
+  titleText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  section.appendChild(titleText);
+
+  // Show top 10 non-compliant layers
+  const topLayers = layers.slice(0, 10);
+  topLayers.forEach((layer, index) => {
+    const layerRow = createLayerRow(layer, index + 1);
+    section.appendChild(layerRow);
+  });
+
+  if (layers.length > 10) {
+    const moreText = figma.createText();
+    moreText.characters = `... and ${layers.length - 10} more layers`;
+    moreText.fontSize = 12;
+    moreText.fontName = { family: "Inter", style: "Italic" };
+    moreText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+    section.appendChild(moreText);
+  }
+
+  return section;
+}
+
+function createLayerRow(layer: any, index: number): FrameNode {
+  const row = figma.createFrame();
+  row.name = `Layer ${index}`;
+  row.resize(1056, 60);
+  row.fills = [{ type: "SOLID", color: { r: 0.98, g: 0.96, b: 0.96 } }];
+  row.layoutMode = "HORIZONTAL";
+  row.paddingTop = 12;
+  row.paddingBottom = 12;
+  row.paddingLeft = 16;
+  row.paddingRight = 16;
+  row.itemSpacing = 12;
+  row.primaryAxisAlignItems = "CENTER";
+  row.counterAxisAlignItems = "CENTER";
+  row.cornerRadius = 6;
+
+  // Index
+  const indexText = figma.createText();
+  indexText.characters = `${index}`;
+  indexText.fontSize = 12;
+  indexText.fontName = { family: "Inter", style: "Bold" };
+  indexText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+  row.appendChild(indexText);
+
+  // Layer info
+  const infoFrame = figma.createFrame();
+  infoFrame.name = "Info";
+  infoFrame.resize(700, 40);
+  infoFrame.fills = [];
+  infoFrame.layoutMode = "VERTICAL";
+  infoFrame.itemSpacing = 4;
+
+  const nameText = figma.createText();
+  nameText.characters = layer.name;
+  nameText.fontSize = 13;
+  nameText.fontName = { family: "Inter", style: "Medium" };
+  nameText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  infoFrame.appendChild(nameText);
+
+  const pathText = figma.createText();
+  pathText.characters = `${layer.type} • ${layer.path}`;
+  pathText.fontSize = 10;
+  pathText.fontName = { family: "Inter", style: "Regular" };
+  pathText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+  infoFrame.appendChild(pathText);
+
+  row.appendChild(infoFrame);
+
+  // Issue count
+  const issueCount = Array.isArray(layer.issues) ? layer.issues.length : 0;
+  const issuesText = figma.createText();
+  issuesText.characters = `${issueCount} issue${issueCount === 1 ? "" : "s"}`;
+  issuesText.fontSize = 12;
+  issuesText.fontName = { family: "Inter", style: "Medium" };
+  issuesText.fills = [{ type: "SOLID", color: { r: 0.9, g: 0.3, b: 0.3 } }];
+  row.appendChild(issuesText);
+
+  return row;
+}
+
+function createAutoLayoutSuggestionsSection(suggestions: any[]): FrameNode {
+  const section = figma.createFrame();
+  section.name = "Auto Layout Suggestions";
+  section.resize(1120, 300);
+  section.fills = [{ type: "SOLID", color: { r: 1, g: 1, b: 1 } }];
+  section.layoutMode = "VERTICAL";
+  section.paddingTop = 24;
+  section.paddingBottom = 24;
+  section.paddingLeft = 32;
+  section.paddingRight = 32;
+  section.itemSpacing = 12;
+  section.cornerRadius = 12;
+  section.primaryAxisSizingMode = "AUTO";
+  section.effects = [
+    {
+      type: "DROP_SHADOW",
+      color: { r: 0, g: 0, b: 0, a: 0.05 },
+      offset: { x: 0, y: 2 },
+      radius: 8,
+      visible: true,
+      blendMode: "NORMAL",
+    },
+  ];
+
+  // Section title
+  const titleText = figma.createText();
+  titleText.characters = `💡 Frames not using Auto Layout (${suggestions.length})`;
+  titleText.fontSize = 20;
+  titleText.fontName = { family: "Inter", style: "Bold" };
+  titleText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  section.appendChild(titleText);
+
+  suggestions.forEach((layer, index) => {
+    const layerRow = createSuggestionRow(layer, index + 1);
+    section.appendChild(layerRow);
+  });
+
+  return section;
+}
+
+function createSuggestionRow(layer: any, index: number): FrameNode {
+  const row = figma.createFrame();
+  row.name = `Suggestion ${index}`;
+  row.resize(1056, 50);
+  row.fills = [{ type: "SOLID", color: { r: 0.96, g: 0.98, b: 1 } }];
+  row.layoutMode = "HORIZONTAL";
+  row.paddingTop = 12;
+  row.paddingBottom = 12;
+  row.paddingLeft = 16;
+  row.paddingRight = 16;
+  row.itemSpacing = 12;
+  row.primaryAxisAlignItems = "CENTER";
+  row.counterAxisAlignItems = "CENTER";
+  row.cornerRadius = 6;
+
+  // Index
+  const indexText = figma.createText();
+  indexText.characters = `${index}`;
+  indexText.fontSize = 12;
+  indexText.fontName = { family: "Inter", style: "Bold" };
+  indexText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+  row.appendChild(indexText);
+
+  // Layer name
+  const nameText = figma.createText();
+  nameText.characters = layer.name;
+  nameText.fontSize = 13;
+  nameText.fontName = { family: "Inter", style: "Medium" };
+  nameText.fills = [{ type: "SOLID", color: { r: 0.2, g: 0.2, b: 0.2 } }];
+  nameText.layoutGrow = 1;
+  row.appendChild(nameText);
+
+  // Path
+  const pathText = figma.createText();
+  pathText.characters = layer.path;
+  pathText.fontSize = 10;
+  pathText.fontName = { family: "Inter", style: "Regular" };
+  pathText.fills = [{ type: "SOLID", color: { r: 0.5, g: 0.5, b: 0.5 } }];
+  row.appendChild(pathText);
+
+  return row;
+}
+
+function getScoreColor(score: number): RGB {
+  if (score >= 80) {
+    return { r: 0.13, g: 0.77, b: 0.29 }; // Green
+  } else if (score >= 60) {
+    return { r: 1, g: 0.73, b: 0 }; // Yellow
+  } else {
+    return { r: 0.96, g: 0.26, b: 0.21 }; // Red
   }
 }
