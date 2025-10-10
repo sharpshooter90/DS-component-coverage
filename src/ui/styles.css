@@ -424,16 +424,13 @@ body {
   justify-content: space-between;
   align-items: start;
   margin-bottom: 8px;
+  gap: 12px;
 }
 
 .layer-info {
   flex: 1;
-}
-
-.layer-name {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 2px;
+  min-width: 0; /* Allow flex item to shrink below content size */
+  overflow: hidden; /* Prevent content from overflowing */
 }
 
 .layer-meta {
@@ -452,6 +449,20 @@ body {
 }
 
 .layer-select-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.layer-auto-layout-btn {
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  font-size: 10px;
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.layer-auto-layout-btn:hover {
   background: var(--bg-tertiary);
 }
 
@@ -925,6 +936,18 @@ body {
   max-width: 200px;
 }
 
+.suggestion-layers-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.layer-status-badge.suggestion {
+  background: var(--accent);
+  color: white;
+}
+
 /* Success Message */
 .success-message {
   position: fixed;
@@ -964,6 +987,8 @@ body {
 .layer-actions {
   display: flex;
   gap: 6px;
+  flex-shrink: 0; /* Prevent actions from shrinking */
+  align-items: flex-start; /* Align to top */
 }
 
 .layer-fix-btn {
@@ -1090,6 +1115,17 @@ body {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0; /* Allow flex item to shrink */
+}
+
+.layer-name {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1; /* Allow name to shrink if needed */
 }
 
 .layer-status-badge {
@@ -1121,6 +1157,8 @@ body {
   font-size: 11px;
   color: var(--text-secondary);
   margin-top: 4px;
+  min-width: 0; /* Allow flex item to shrink */
+  overflow: hidden; /* Prevent content from overflowing */
 }
 
 .layer-type {
@@ -1137,7 +1175,8 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 300px;
+  flex: 1; /* Take remaining space */
+  min-width: 0; /* Allow flex item to shrink */
 }
 
 .issues-header {
@@ -1205,11 +1244,13 @@ body {
 
 /* Button improvements */
 .btn.btn-small.btn-secondary.layer-select-btn,
+.btn.btn-small.btn-secondary.layer-auto-layout-btn,
 .btn.btn-small.btn-primary.layer-fix-btn {
   white-space: nowrap;
 }
 
-.btn.btn-small.btn-secondary.layer-select-btn:hover {
+.btn.btn-small.btn-secondary.layer-select-btn:hover,
+.btn.btn-small.btn-secondary.layer-auto-layout-btn:hover {
   background: var(--border-color);
 }
 

@@ -12,6 +12,14 @@ interface DetailedViewProps {
         rawProperties?: any;
         analysis?: any;
       }>;
+      suggestions?: {
+        autoLayout?: Array<{
+          id: string;
+          name: string;
+          type: string;
+          path: string;
+        }>;
+      };
     };
   };
   onSelectLayer: (layerId: string) => void;
@@ -24,6 +32,7 @@ interface DetailedViewProps {
       path: string;
     }>
   ) => void;
+  onConvertToAutoLayout?: (layerId: string) => void;
   onExportDebug?: () => void;
   onRefresh?: () => void;
 }
@@ -32,6 +41,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   analysis,
   onSelectLayer,
   onFixLayer,
+  onConvertToAutoLayout,
   onExportDebug,
   onRefresh,
 }) => {
@@ -46,28 +56,29 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   const { nonCompliantLayers, suggestions } = analysis.details;
 
   const hasFixableIssue = (issues: string[]) => {
-    return issues.some(
-      (issue) => {
-        const normalized = issue.toLowerCase();
-        const isCritical =
-          issue.includes("🔴") ||
-          issue.includes("⚠️") ||
-          issue.includes("💡 frame can use auto layout");
-        if (!isCritical) return false;
-        return (
-          normalized.includes("color") ||
-          normalized.includes("fill") ||
-          normalized.includes("stroke") ||
-          normalized.includes("token") ||
-          normalized.includes("text") ||
-          normalized.includes("spacing") ||
-          normalized.includes("corner") ||
-          normalized.includes("padding") ||
-          normalized.includes("effect") ||
-          normalized.includes("auto layout")
-        );
+    return issues.some((issue) => {
+      if (typeof issue !== "string") {
+        return false;
       }
-    );
+      const normalized = issue.toLowerCase();
+      const isCritical =
+        issue.includes("🔴") ||
+        issue.includes("⚠️") ||
+        issue.includes("💡 frame can use auto layout");
+      if (!isCritical) return false;
+      return (
+        normalized.includes("color") ||
+        normalized.includes("fill") ||
+        normalized.includes("stroke") ||
+        normalized.includes("token") ||
+        normalized.includes("text") ||
+        normalized.includes("spacing") ||
+        normalized.includes("corner") ||
+        normalized.includes("padding") ||
+        normalized.includes("effect") ||
+        normalized.includes("auto layout")
+      );
+    });
   };
 
   const isCompliant = (issues: string[]) => {
@@ -96,11 +107,30 @@ const DetailedView: React.FC<DetailedViewProps> = ({
     return score;
   };
 
+  const getIssues = (layer: { issues: string[] }) =>
+    Array.isArray(layer.issues) ? layer.issues : [];
+
   const layersWithFixableIssues = nonCompliantLayers.filter((layer) =>
-    hasFixableIssue(layer.issues)
+    hasFixableIssue(getIssues(layer))
   );
 
   const autoLayoutSuggestions = suggestions?.autoLayout ?? [];
+  const autoLayoutSuggestionIds = React.useMemo(
+    () => new Set(autoLayoutSuggestions.map((layer) => layer.id)),
+    [autoLayoutSuggestions]
+  );
+
+  // Filter auto layout suggestions based on search term and type
+  const filteredAutoLayoutSuggestions = autoLayoutSuggestions.filter(
+    (layer) => {
+      const matchesSearch =
+        searchTerm === "" ||
+        layer.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        layer.path?.toLowerCase().includes(searchTerm.toLowerCase());
+      const matchesType = filterType === "all" || layer.type === filterType;
+      return matchesSearch && matchesType;
+    }
+  );
 
   const toggleLayerSelection = (layerId: string) => {
     const newSelection = new Set(selectedLayers);
@@ -114,7 +144,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
 
   const selectAll = () => {
     const allFixableLayerIds = filteredLayers
-      .filter((layer) => hasFixableIssue(layer.issues))
+      .filter((layer) => hasFixableIssue(getIssues(layer)))
       .map((layer) => layer.id);
     setSelectedLayers(new Set(allFixableLayerIds));
   };
@@ -141,22 +171,25 @@ const DetailedView: React.FC<DetailedViewProps> = ({
   // Filter and sort layers
   const filteredLayers = nonCompliantLayers
     .filter((layer) => {
-      if (!showCompliant && isCompliant(layer.issues)) {
+      const issues = getIssues(layer);
+      if (!showCompliant && isCompliant(issues)) {
         return false;
       }
       const matchesSearch =
-        layer.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        layer.path.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        layer.issues.some((issue) =>
+        layer.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        layer.path?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        issues.some((issue) =>
           issue.toLowerCase().includes(searchTerm.toLowerCase())
         );
       const matchesType = filterType === "all" || layer.type === filterType;
       return matchesSearch && matchesType;
     })
     .sort((a, b) => {
+      const issuesA = getIssues(a);
+      const issuesB = getIssues(b);
       if (sortBy === "severity") {
         // Sort by severity: highest severity first
-        return getSeverityScore(b.issues) - getSeverityScore(a.issues);
+        return getSeverityScore(issuesB) - getSeverityScore(issuesA);
       } else if (sortBy === "name") {
         // Sort alphabetically by name
         return a.name.localeCompare(b.name);
@@ -173,9 +206,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
       {/* Top Action Bar */}
       <div className="detailed-action-bar">
         <div className="action-bar-left">
-          <h3 className="action-bar-title">
-            📋 Layer Compliance
-          </h3>
+          <h3 className="action-bar-title">📋 Layer Compliance</h3>
           {layersWithFixableIssues.length > 0 && (
             <span className="fixable-count">
               {layersWithFixableIssues.length} fixable
@@ -275,46 +306,151 @@ const DetailedView: React.FC<DetailedViewProps> = ({
         </select>
       </div>
 
-      {autoLayoutSuggestions.length > 0 && (
+      {filteredAutoLayoutSuggestions.length > 0 && (
         <div className="suggestion-card">
           <div className="suggestion-header">
             <div>
-              <div className="suggestion-title">📐 Frames not using Auto Layout</div>
+              <div className="suggestion-title">
+                📐 Frames not using Auto Layout
+              </div>
               <div className="suggestion-subtitle">
-                {autoLayoutSuggestions.length} frame
-                {autoLayoutSuggestions.length === 1 ? "" : "s"} can be converted to Auto Layout.
+                {filteredAutoLayoutSuggestions.length} frame
+                {filteredAutoLayoutSuggestions.length === 1 ? "" : "s"} can be
+                converted to Auto Layout.
+                {searchTerm &&
+                  autoLayoutSuggestions.length >
+                    filteredAutoLayoutSuggestions.length && (
+                    <span
+                      style={{
+                        marginLeft: "8px",
+                        color: "var(--text-tertiary)",
+                      }}
+                    >
+                      (filtered from {autoLayoutSuggestions.length})
+                    </span>
+                  )}
               </div>
             </div>
             <div className="suggestion-actions">
               <button
                 className="btn btn-small btn-secondary"
                 onClick={() => {
-                  autoLayoutSuggestions.forEach((layer) =>
+                  filteredAutoLayoutSuggestions.forEach((layer) =>
                     onSelectLayer(layer.id)
                   );
                 }}
               >
                 📍 Select All
               </button>
-              {onFixLayer && (
+              {onConvertToAutoLayout && (
                 <button
                   className="btn btn-small btn-primary"
-                  onClick={() => onFixLayer(autoLayoutSuggestions as any)}
+                  onClick={() => {
+                    filteredAutoLayoutSuggestions.forEach((layer) =>
+                      onConvertToAutoLayout(layer.id)
+                    );
+                  }}
                   style={{ whiteSpace: "nowrap" }}
                 >
-                  ⚡ Convert to Auto Layout
+                  📐 Convert to Auto Layout
                 </button>
               )}
             </div>
           </div>
-          <ul className="suggestion-list">
-            {autoLayoutSuggestions.map((layer) => (
-              <li key={layer.id}>
-                <span className="suggestion-name">{layer.name}</span>
-                <span className="suggestion-path">{layer.path}</span>
-              </li>
-            ))}
-          </ul>
+          <div className="suggestion-layers-list">
+            {filteredAutoLayoutSuggestions.map((layer) => {
+              // Find the full layer data from nonCompliantLayers if available
+              const fullLayer = nonCompliantLayers.find(
+                (l) => l.id === layer.id
+              );
+              const layerIssues = fullLayer ? getIssues(fullLayer) : [];
+
+              return (
+                <div key={layer.id} className="layer-item enhanced">
+                  <div className="layer-header">
+                    <div className="layer-info">
+                      <div className="layer-name-row">
+                        <div className="layer-name">{layer.name}</div>
+                        <span className="layer-status-badge suggestion">
+                          💡 Can use Auto Layout
+                        </span>
+                      </div>
+                      <div className="layer-meta">
+                        <span className="layer-type">{layer.type}</span>
+                        <span className="layer-path-short">{layer.path}</span>
+                      </div>
+                    </div>
+                    <div className="layer-actions">
+                      <button
+                        className="btn btn-small btn-secondary layer-select-btn"
+                        onClick={() => onSelectLayer(layer.id)}
+                        title="Select in Figma"
+                      >
+                        📍 Select
+                      </button>
+                      {onConvertToAutoLayout && (
+                        <button
+                          className="btn btn-small btn-primary layer-auto-layout-btn"
+                          onClick={() => onConvertToAutoLayout(layer.id)}
+                          title="Convert this frame to Auto Layout"
+                        >
+                          📐 Auto Layout
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {layerIssues.length > 0 && (
+                    <div className="layer-issues">
+                      <div className="issues-header">
+                        <strong>Issues:</strong>
+                      </div>
+                      {layerIssues.map((issue, idx) => (
+                        <div
+                          key={idx}
+                          className={`issue ${
+                            issue.includes("🔴")
+                              ? "critical"
+                              : issue.includes("⚠️")
+                              ? "warning"
+                              : "success"
+                          }`}
+                        >
+                          {issue}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {fullLayer?.rawProperties && (
+                    <details className="layer-details">
+                      <summary className="details-toggle">
+                        🔍 View Raw Properties
+                      </summary>
+                      <div className="details-content">
+                        <pre className="properties-json">
+                          {JSON.stringify(fullLayer.rawProperties, null, 2)}
+                        </pre>
+                      </div>
+                    </details>
+                  )}
+
+                  {fullLayer?.analysis && (
+                    <details className="layer-details">
+                      <summary className="details-toggle">
+                        📊 View Analysis Results
+                      </summary>
+                      <div className="details-content">
+                        <pre className="properties-json">
+                          {JSON.stringify(fullLayer.analysis, null, 2)}
+                        </pre>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -332,7 +468,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
               }`}
             >
               <div className="layer-header">
-                {hasFixableIssue(layer.issues) && (
+                {hasFixableIssue(getIssues(layer)) && (
                   <input
                     type="checkbox"
                     className="layer-checkbox"
@@ -345,12 +481,12 @@ const DetailedView: React.FC<DetailedViewProps> = ({
                     <div className="layer-name">{layer.name}</div>
                     <span
                       className={`layer-status-badge ${
-                        isCompliant(layer.issues)
+                        isCompliant(getIssues(layer))
                           ? "compliant"
                           : "non-compliant"
                       }`}
                     >
-                      {isCompliant(layer.issues)
+                      {isCompliant(getIssues(layer))
                         ? "✅ Compliant"
                         : "❌ Non-Compliant"}
                     </span>
@@ -368,7 +504,17 @@ const DetailedView: React.FC<DetailedViewProps> = ({
                   >
                     📍 Select
                   </button>
-                  {onFixLayer && hasFixableIssue(layer.issues) && (
+                  {onConvertToAutoLayout &&
+                    layer.type.toLowerCase() === "frame" && (
+                      <button
+                        className="btn btn-small btn-secondary layer-auto-layout-btn"
+                        onClick={() => onConvertToAutoLayout(layer.id)}
+                        title="Convert this frame to Auto Layout"
+                      >
+                        📐 Auto Layout
+                      </button>
+                    )}
+                  {onFixLayer && hasFixableIssue(getIssues(layer)) && (
                     <button
                       className="btn btn-small btn-primary layer-fix-btn"
                       onClick={() => onFixLayer([layer])}
@@ -384,7 +530,7 @@ const DetailedView: React.FC<DetailedViewProps> = ({
                 <div className="issues-header">
                   <strong>Issues:</strong>
                 </div>
-                {layer.issues.map((issue, idx) => (
+                {getIssues(layer).map((issue, idx) => (
                   <div
                     key={idx}
                     className={`issue ${

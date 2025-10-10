@@ -33,6 +33,14 @@ interface CoverageAnalysis {
       issues: string[];
       path: string;
     }>;
+    suggestions?: {
+      autoLayout?: Array<{
+        id: string;
+        name: string;
+        type: string;
+        path: string;
+      }>;
+    };
   };
   settings: any;
 }
@@ -156,6 +164,13 @@ function App() {
     );
   };
 
+  const handleConvertToAutoLayout = (layerId: string) => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "convert-to-auto-layout", layerId } },
+      "*"
+    );
+  };
+
   const handleExportDebug = () => {
     window.parent.postMessage(
       { pluginMessage: { type: "export-debug-data" } },
@@ -230,6 +245,7 @@ function App() {
                   setSelectedFixLayer(layer);
                   setShowFixWizard(true);
                 }}
+                onConvertToAutoLayout={handleConvertToAutoLayout}
                 onExportDebug={handleExportDebug}
                 onRefresh={handleAnalyze}
               />

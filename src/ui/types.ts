@@ -17,6 +17,9 @@ export interface CoverageSummary {
 export interface CoverageDetails {
   byType: TypeBreakdown;
   nonCompliantLayers: NonCompliantLayer[];
+  suggestions?: {
+    autoLayout?: AutoLayoutSuggestion[];
+  };
 }
 
 export interface TypeBreakdown {
@@ -32,6 +35,13 @@ export interface NonCompliantLayer {
   name: string;
   type: string;
   issues: string[];
+  path: string;
+}
+
+export interface AutoLayoutSuggestion {
+  id: string;
+  name: string;
+  type: string;
   path: string;
 }
 

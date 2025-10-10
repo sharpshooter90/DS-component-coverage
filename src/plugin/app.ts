@@ -13,6 +13,7 @@ import {
 } from "./utils/effects";
 import {
   AutoLayoutConversionOptions,
+  AutoLayoutDirection,
   convertFrameNodeToAutoLayout,
 } from "./utils/autoLayout";
 
@@ -88,6 +89,8 @@ figma.showUI(__html__, { width: 480, height: 720 });
 
 let selectionSubscriptionCount = 0;
 let lastAnalyzedNodeId: string | null = null;
+let rootScreenNodeId: string | null = null; // Track the root screen being analyzed
+let isSelectingChildLayer = false; // Flag to prevent re-analysis when selecting child layers
 
 figma.ui.onmessage = async (msg) => {
   if (msg.type === "analyze-selection") {
@@ -106,8 +109,22 @@ figma.ui.onmessage = async (msg) => {
   } else if (msg.type === "select-layer") {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "id" in node) {
+      // Set flag to prevent re-analysis when selecting child layers
+      isSelectingChildLayer = true;
+
       figma.currentPage.selection = [node as SceneNode];
-      figma.viewport.scrollAndZoomIntoView([node as SceneNode]);
+
+      // Only zoom if it's the root screen or if explicitly requested
+      // For child layers, just select without zooming to keep context
+      const isRootScreen = msg.layerId === rootScreenNodeId;
+      if (isRootScreen || msg.zoomToLayer) {
+        figma.viewport.scrollAndZoomIntoView([node as SceneNode]);
+      }
+
+      // Reset flag after a short delay to allow selection event to complete
+      setTimeout(() => {
+        isSelectingChildLayer = false;
+      }, 100);
     }
   } else if (msg.type === "get-layer-colors") {
     const node = await figma.getNodeByIdAsync(msg.layerId);
@@ -178,6 +195,11 @@ function notifySelectionChange(nodeId: string | null) {
 }
 
 function handleSelectionChange() {
+  // Don't trigger re-analysis if we're just selecting a child layer from the UI
+  if (isSelectingChildLayer) {
+    return;
+  }
+
   const selection = figma.currentPage.selection;
   if (selection.length !== 1) {
     lastAnalyzedNodeId = null;
@@ -243,6 +265,8 @@ async function analyzeSelection() {
 }
 
 async function runAnalysisOnNode(node: SceneNode) {
+  lastAnalyzedNodeId = node.id;
+  rootScreenNodeId = node.id; // Track the root screen being analyzed
   postMessageToUI({ type: "analysis-started" });
 
   try {
@@ -745,9 +769,7 @@ function checkStyleUsage(node: SceneNode): string[] {
     const effects = node.effects;
     const supportsEffectStyles = "effectStyleId" in node;
     const usingEffectStyle =
-      supportsEffectStyles && (node as any).effectStyleId
-        ? true
-        : false;
+      supportsEffectStyles && (node as any).effectStyleId ? true : false;
 
     const hasVariableBoundEffects = effects.some(
       (effect) =>
@@ -1721,7 +1743,12 @@ async function applyEffectStyles(
 ): Promise<void> {
   const node = (await figma.getNodeByIdAsync(layerId)) as SceneNode | null;
 
-  if (!node || !("effects" in node) || !node.effects || node.effects.length === 0) {
+  if (
+    !node ||
+    !("effects" in node) ||
+    !node.effects ||
+    node.effects.length === 0
+  ) {
     postMessageToUI({
       type: "error",
       message: "Cannot apply effect styles to this layer",
@@ -1856,17 +1883,32 @@ function toAutoLayoutOptions(
   return {};
 }
 
+interface AutoLayoutConversionResult {
+  converted: boolean;
+  alreadyAutoLayout: boolean;
+  skipped: boolean;
+  direction: AutoLayoutDirection | null;
+}
+
 async function convertFrameToAutoLayoutById(
   layerId: string,
-  direction?: RawAutoLayoutDirection
-): Promise<void> {
+  direction?: RawAutoLayoutDirection,
+  notify: boolean = true
+): Promise<AutoLayoutConversionResult> {
   const node = await figma.getNodeByIdAsync(layerId);
   if (!node || node.type !== "FRAME") {
-    postMessageToUI({
-      type: "error",
-      message: "Cannot convert this layer to Auto Layout",
-    });
-    return;
+    if (notify) {
+      postMessageToUI({
+        type: "error",
+        message: "Cannot convert this layer to Auto Layout",
+      });
+    }
+    return {
+      converted: false,
+      alreadyAutoLayout: false,
+      skipped: true,
+      direction: null,
+    };
   }
 
   try {
@@ -1876,22 +1918,48 @@ async function convertFrameToAutoLayoutById(
     );
 
     if (result.converted) {
-      postMessageToUI({
-        type: "fix-applied",
-        message: `Converted "${node.name}" to Auto Layout (${result.direction.toLowerCase()})`,
-      });
-      figma.notify(`✅ Converted ${node.name} to Auto Layout`);
+      if (notify) {
+        postMessageToUI({
+          type: "fix-applied",
+          message: `Converted "${
+            node.name
+          }" to Auto Layout (${result.direction.toLowerCase()})`,
+        });
+        figma.notify(`✅ Converted ${node.name} to Auto Layout`);
+      }
+      return {
+        converted: true,
+        alreadyAutoLayout: false,
+        skipped: false,
+        direction: result.direction,
+      };
     } else {
-      postMessageToUI({
-        type: "fix-applied",
-        message: `"${node.name}" already uses Auto Layout`,
-      });
+      if (notify) {
+        postMessageToUI({
+          type: "fix-applied",
+          message: `"${node.name}" already uses Auto Layout`,
+        });
+      }
+      return {
+        converted: false,
+        alreadyAutoLayout: true,
+        skipped: false,
+        direction: result.direction,
+      };
     }
   } catch (error) {
-    postMessageToUI({
-      type: "error",
-      message: `Failed to convert to Auto Layout: ${error}`,
-    });
+    if (notify) {
+      postMessageToUI({
+        type: "error",
+        message: `Failed to convert to Auto Layout: ${error}`,
+      });
+    }
+    return {
+      converted: false,
+      alreadyAutoLayout: false,
+      skipped: true,
+      direction: null,
+    };
   }
 }
 
@@ -1900,32 +1968,27 @@ async function convertFramesToAutoLayout(
   direction?: RawAutoLayoutDirection
 ): Promise<void> {
   try {
-    const options = toAutoLayoutOptions(direction);
+    const uniqueIds = [...new Set(layerIds)];
     let converted = 0;
     let alreadyLayout = 0;
     let skipped = 0;
 
-    for (const layerId of [...new Set(layerIds)]) {
-      const node = await figma.getNodeByIdAsync(layerId);
-      if (!node || node.type !== "FRAME") {
+    for (const layerId of uniqueIds) {
+      const result = await convertFrameToAutoLayoutById(
+        layerId,
+        direction,
+        false
+      );
+
+      if (result.converted) {
+        converted++;
+      } else if (result.alreadyAutoLayout) {
+        alreadyLayout++;
+      } else {
         skipped++;
-        continue;
       }
 
-      try {
-        const result = convertFrameNodeToAutoLayout(
-          node as FrameNode,
-          options
-        );
-        if (result.converted) {
-          converted++;
-        } else {
-          alreadyLayout++;
-        }
-      } catch (error) {
-        console.warn(`Failed to convert frame ${node.id}:`, error);
-        skipped++;
-      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
 
     if (converted > 0) {
@@ -1936,7 +1999,9 @@ async function convertFramesToAutoLayout(
         } to Auto Layout`,
       });
       figma.notify(
-        `✅ Converted ${converted} frame${converted === 1 ? "" : "s"} to Auto Layout`
+        `✅ Converted ${converted} frame${
+          converted === 1 ? "" : "s"
+        } to Auto Layout`
       );
     } else {
       postMessageToUI({
@@ -1950,7 +2015,9 @@ async function convertFramesToAutoLayout(
 
     if (skipped > 0) {
       figma.notify(
-        `⚠️ Skipped ${skipped} layer${skipped === 1 ? "" : "s"} that cannot be converted`
+        `⚠️ Skipped ${skipped} layer${
+          skipped === 1 ? "" : "s"
+        } that cannot be converted`
       );
     }
   } catch (error) {
