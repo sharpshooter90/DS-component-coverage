@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { linearService } from "../utils/linearService";
-import type { CoverageAnalysis, LinearIssue } from "../types";
+import type { CoverageAnalysis, LinearIssue, LinearConfig } from "../types";
 
 interface SummaryViewProps {
   analysis: CoverageAnalysis;
@@ -18,6 +18,31 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
   }>({ type: null, message: "" });
   const [assigneeEmail, setAssigneeEmail] = useState("");
   const [showAssigneeSection, setShowAssigneeSection] = useState(false);
+  const [teamMembers, setTeamMembers] = useState<
+    Array<{ id: string; name: string; email: string }>
+  >([]);
+  const [loadingTeamMembers, setLoadingTeamMembers] = useState(false);
+  const [linearConfig, setLinearConfig] = useState<LinearConfig | null>(null);
+
+  // Load Linear config on component mount
+  useEffect(() => {
+    console.log("📥 SummaryView: Requesting Linear config...");
+    linearService.requestConfig();
+
+    const handleMessage = (event: MessageEvent) => {
+      const msg = event.data.pluginMessage;
+      if (msg?.type === "linear-config-loaded") {
+        console.log("📥 SummaryView: Received Linear config:", msg.config);
+        if (msg.config) {
+          linearService.loadConfig(msg.config);
+          setLinearConfig(msg.config);
+        }
+      }
+    };
+
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
 
   const sortedEntries = React.useMemo(
     () =>
@@ -31,6 +56,53 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
     if (score >= 80) return "high";
     if (score >= 50) return "medium";
     return "low";
+  };
+
+  const handleLoadTeamMembers = async () => {
+    const config = linearService.getConfig();
+    console.log("🔍 Loading team members...");
+    console.log("📋 Linear config:", config);
+
+    if (!config || !config.teamId) {
+      console.warn("⚠️ No Linear config or team ID found");
+      return;
+    }
+
+    setLoadingTeamMembers(true);
+    try {
+      console.log("🚀 Fetching users from Linear API...");
+      console.log("🔗 API Endpoint:", config.apiEndpoint);
+      console.log("🏢 Team ID:", config.teamId);
+
+      const result = await linearService.getUsers();
+
+      console.log("✅ Linear API Response:", result);
+
+      if (result.success && result.users) {
+        console.log(
+          `👥 Found ${result.users.length} team members:`,
+          result.users
+        );
+        setTeamMembers(result.users);
+      } else {
+        console.error("❌ Failed to load team members:", result.error);
+      }
+    } catch (error) {
+      console.error("💥 Error loading team members:", error);
+    } finally {
+      setLoadingTeamMembers(false);
+      console.log("✔️ Team members loading complete");
+    }
+  };
+
+  const handleToggleAssigneeSection = async () => {
+    const newState = !showAssigneeSection;
+    setShowAssigneeSection(newState);
+
+    // Load team members when opening the section
+    if (newState && teamMembers.length === 0) {
+      await handleLoadTeamMembers();
+    }
   };
 
   const handleSendToLinear = async () => {
@@ -122,8 +194,6 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
     }
   };
 
-  const linearConfig = linearService.getConfig();
-
   return (
     <div className="summary-view">
       <div className="score-card">
@@ -207,7 +277,7 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
           <h3 className="export-title">Linear Integration</h3>
 
           <button
-            onClick={() => setShowAssigneeSection(!showAssigneeSection)}
+            onClick={handleToggleAssigneeSection}
             style={{
               width: "100%",
               padding: "8px 12px",
@@ -247,29 +317,67 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
               >
                 Assign to (Optional)
               </label>
-              <input
-                type="email"
-                value={assigneeEmail}
-                onChange={(e) => setAssigneeEmail(e.target.value)}
-                placeholder="teammate@company.com"
-                style={{
-                  width: "100%",
-                  padding: "8px 10px",
-                  fontSize: "11px",
-                  border: "1px solid var(--border)",
-                  borderRadius: "4px",
-                  background: "var(--background)",
-                  color: "var(--text-primary)",
-                  marginBottom: "6px",
-                }}
-              />
+
+              {loadingTeamMembers ? (
+                <div
+                  style={{
+                    padding: "8px",
+                    fontSize: "11px",
+                    color: "var(--text-secondary)",
+                  }}
+                >
+                  Loading team members...
+                </div>
+              ) : teamMembers.length > 0 ? (
+                <select
+                  value={assigneeEmail}
+                  onChange={(e) => setAssigneeEmail(e.target.value)}
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "11px",
+                    border: "1px solid var(--border)",
+                    borderRadius: "4px",
+                    background: "var(--background)",
+                    color: "var(--text-primary)",
+                    marginBottom: "6px",
+                  }}
+                >
+                  <option value="">-- Select team member --</option>
+                  {teamMembers.map((member) => (
+                    <option key={member.id} value={member.email}>
+                      {member.name} ({member.email})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="email"
+                  value={assigneeEmail}
+                  onChange={(e) => setAssigneeEmail(e.target.value)}
+                  placeholder="teammate@company.com"
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px",
+                    fontSize: "11px",
+                    border: "1px solid var(--border)",
+                    borderRadius: "4px",
+                    background: "var(--background)",
+                    color: "var(--text-primary)",
+                    marginBottom: "6px",
+                  }}
+                />
+              )}
+
               <div
                 style={{
                   fontSize: "10px",
                   color: "var(--text-secondary)",
                 }}
               >
-                Leave empty to create unassigned issue
+                {teamMembers.length > 0
+                  ? "Select a team member or leave unassigned"
+                  : "Enter email manually or leave empty to create unassigned issue"}
               </div>
             </div>
           )}

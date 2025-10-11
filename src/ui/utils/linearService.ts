@@ -63,11 +63,25 @@ class LinearService {
     options: RequestInit = {}
   ): Promise<{ success: boolean; data?: T; error?: string }> {
     if (!this.config) {
+      console.error("🚫 Linear not configured");
       return { success: false, error: "Linear not configured" };
     }
 
     try {
       const url = `${this.config.apiEndpoint}${endpoint}`;
+      console.log("📡 Making request to:", url);
+      console.log(
+        "🔑 Using API key:",
+        this.config.apiKey.substring(0, 20) + "..."
+      );
+      console.log("⚙️ Request options:", {
+        method: options.method || "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer [REDACTED]",
+        },
+      });
+
       const response = await fetch(url, {
         ...options,
         headers: {
@@ -77,18 +91,23 @@ class LinearService {
         },
       });
 
+      console.log("📊 Response status:", response.status, response.statusText);
+
       const data = await response.json();
+      console.log("📦 Response data:", data);
 
       if (!response.ok) {
+        console.error("❌ API request failed:", data);
         return {
           success: false,
           error: data.error || `HTTP ${response.status}`,
         };
       }
 
+      console.log("✅ API request successful");
       return { success: true, data };
     } catch (error) {
-      console.error("Linear API request failed:", error);
+      console.error("💥 Linear API request failed:", error);
       return {
         success: false,
         error: error instanceof Error ? error.message : "Unknown error",
@@ -129,7 +148,19 @@ class LinearService {
     teams?: LinearTeam[];
     error?: string;
   }> {
-    return this.request<{ teams: LinearTeam[] }>("/api/linear/teams");
+    const result = await this.request<{ teams: LinearTeam[] }>(
+      "/api/linear/teams"
+    );
+    if (result.success && result.data) {
+      return {
+        success: true,
+        teams: result.data.teams,
+      };
+    }
+    return {
+      success: false,
+      error: result.error,
+    };
   }
 
   async getUsers(): Promise<{
@@ -137,7 +168,19 @@ class LinearService {
     users?: LinearUser[];
     error?: string;
   }> {
-    return this.request<{ users: LinearUser[] }>("/api/linear/users");
+    const result = await this.request<{ users: LinearUser[] }>(
+      "/api/linear/users"
+    );
+    if (result.success && result.data) {
+      return {
+        success: true,
+        users: result.data.users,
+      };
+    }
+    return {
+      success: false,
+      error: result.error,
+    };
   }
 
   async getProjects(teamId: string): Promise<{
@@ -145,9 +188,19 @@ class LinearService {
     projects?: LinearProject[];
     error?: string;
   }> {
-    return this.request<{ projects: LinearProject[] }>(
+    const result = await this.request<{ projects: LinearProject[] }>(
       `/api/linear/projects/${teamId}`
     );
+    if (result.success && result.data) {
+      return {
+        success: true,
+        projects: result.data.projects,
+      };
+    }
+    return {
+      success: false,
+      error: result.error,
+    };
   }
 
   async createIssue(
