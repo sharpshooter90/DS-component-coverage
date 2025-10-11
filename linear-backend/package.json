@@ -1,0 +1,21 @@
+{
+  "name": "figma-linear-proxy",
+  "version": "1.0.0",
+  "description": "Backend proxy for Figma plugin to Linear API integration",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@linear/sdk": "^23.0.0",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+

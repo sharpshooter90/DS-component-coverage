@@ -53,12 +53,55 @@ export interface AnalysisSettings {
   ignoredTypes: string[];
 }
 
+export interface LinearConfig {
+  enabled: boolean;
+  apiKey: string;
+  apiEndpoint: string;
+  teamId: string;
+  assigneeEmail?: string;
+  projectId?: string;
+  labelIds?: string[];
+  priority?: number;
+}
+
+export interface LinearTeam {
+  id: string;
+  name: string;
+  key: string;
+}
+
+export interface LinearUser {
+  id: string;
+  name: string;
+  email: string;
+  displayName: string;
+}
+
+export interface LinearProject {
+  id: string;
+  name: string;
+  key: string;
+}
+
+export interface LinearIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  url: string;
+  state?: string;
+}
+
 export type PluginMessage =
   | { type: "analysis-started" }
   | { type: "analysis-progress"; progress: number }
   | { type: "analysis-complete"; data: CoverageAnalysis }
   | { type: "error"; message: string }
-  | { type: "settings-updated"; settings: AnalysisSettings };
+  | { type: "settings-updated"; settings: AnalysisSettings }
+  | { type: "linear-config-updated"; config: LinearConfig }
+  | { type: "linear-config-loaded"; config: LinearConfig | null }
+  | { type: "linear-issue-created"; issue: LinearIssue }
+  | { type: "linear-error"; message: string }
+  | { type: "file-info"; data: { fileKey: string; nodeId: string } };
 
 export interface RGB {
   r: number;

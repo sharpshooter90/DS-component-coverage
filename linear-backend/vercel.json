@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "server.js"
+    }
+  ],
+  "env": {
+    "LINEAR_API_KEY": "@linear-api-key",
+    "LINEAR_TEAM_ID": "@linear-team-id"
+  }
+}
+

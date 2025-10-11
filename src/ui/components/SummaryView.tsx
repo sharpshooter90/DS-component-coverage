@@ -1,29 +1,22 @@
-import React from "react";
+import React, { useState } from "react";
+import { linearService } from "../utils/linearService";
+import type { CoverageAnalysis, LinearIssue } from "../types";
 
 interface SummaryViewProps {
-  analysis: {
-    summary: {
-      overallScore: number;
-      componentCoverage: number;
-      tokenCoverage: number;
-      styleCoverage: number;
-      totalLayers: number;
-      compliantLayers: number;
-      analyzedFrameName: string;
-    };
-    details: {
-      byType: Record<
-        string,
-        { total: number; compliant: number; percentage: number }
-      >;
-    };
-  };
+  analysis: CoverageAnalysis;
   onExport: (format: "json" | "csv") => void;
 }
 
 const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
   const { summary, details } = analysis;
   const [showPerfect, setShowPerfect] = React.useState<boolean>(false);
+  const [isSendingToLinear, setIsSendingToLinear] = useState(false);
+  const [linearStatus, setLinearStatus] = useState<{
+    type: "success" | "error" | null;
+    message: string;
+    issue?: LinearIssue;
+  }>({ type: null, message: "" });
+
   const sortedEntries = React.useMemo(
     () =>
       Object.entries(details.byType)
@@ -37,6 +30,85 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
     if (score >= 50) return "medium";
     return "low";
   };
+
+  const handleSendToLinear = async () => {
+    const config = linearService.getConfig();
+
+    if (!config || !config.enabled) {
+      setLinearStatus({
+        type: "error",
+        message: "Linear integration not configured. Please configure in Settings.",
+      });
+      return;
+    }
+
+    if (!config.teamId) {
+      setLinearStatus({
+        type: "error",
+        message: "Please select a team in Linear settings.",
+      });
+      return;
+    }
+
+    setIsSendingToLinear(true);
+    setLinearStatus({ type: null, message: "" });
+
+    try {
+      // Get Figma file info from parent
+      parent.postMessage(
+        { pluginMessage: { type: "get-file-info" } },
+        "*"
+      );
+
+      // Wait for file info response
+      const fileInfo = await new Promise<{
+        fileKey: string;
+        nodeId: string;
+      }>((resolve) => {
+        const handler = (event: MessageEvent) => {
+          if (event.data.pluginMessage?.type === "file-info") {
+            window.removeEventListener("message", handler);
+            resolve(event.data.pluginMessage.data);
+          }
+        };
+        window.addEventListener("message", handler);
+
+        // Timeout after 5 seconds
+        setTimeout(() => {
+          window.removeEventListener("message", handler);
+          resolve({ fileKey: "", nodeId: "" });
+        }, 5000);
+      });
+
+      const result = await linearService.createIssue(
+        analysis,
+        fileInfo.fileKey,
+        fileInfo.nodeId
+      );
+
+      if (result.success && result.issue) {
+        setLinearStatus({
+          type: "success",
+          message: `Issue created successfully!`,
+          issue: result.issue,
+        });
+      } else {
+        setLinearStatus({
+          type: "error",
+          message: result.error || "Failed to create Linear issue",
+        });
+      }
+    } catch (error) {
+      setLinearStatus({
+        type: "error",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    } finally {
+      setIsSendingToLinear(false);
+    }
+  };
+
+  const linearConfig = linearService.getConfig();
 
   return (
     <div className="summary-view">
@@ -115,6 +187,62 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
           </div>
         ))}
       </div>
+
+      {linearConfig && linearConfig.enabled && (
+        <div className="linear-section">
+          <h3 className="export-title">Linear Integration</h3>
+          <button
+            className="btn btn-primary"
+            onClick={handleSendToLinear}
+            disabled={isSendingToLinear}
+            style={{
+              width: "100%",
+              padding: "12px",
+              fontSize: "13px",
+              fontWeight: 600,
+            }}
+          >
+            {isSendingToLinear ? "Creating Issue..." : "📋 Send to Linear"}
+          </button>
+
+          {linearStatus.type && (
+            <div
+              style={{
+                marginTop: "12px",
+                padding: "12px",
+                fontSize: "12px",
+                borderRadius: "6px",
+                background:
+                  linearStatus.type === "success"
+                    ? "rgba(0, 200, 100, 0.1)"
+                    : "rgba(255, 60, 60, 0.1)",
+                color:
+                  linearStatus.type === "success"
+                    ? "rgb(0, 200, 100)"
+                    : "rgb(255, 60, 60)",
+              }}
+            >
+              {linearStatus.message}
+              {linearStatus.issue && (
+                <div style={{ marginTop: "8px" }}>
+                  <a
+                    href={linearStatus.issue.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      color: "rgb(0, 200, 100)",
+                      textDecoration: "underline",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {linearStatus.issue.identifier}: {linearStatus.issue.title}
+                  </a>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="export-section">
         <h3 className="export-title">Export Results</h3>

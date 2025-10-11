@@ -187,6 +187,32 @@ figma.ui.onmessage = async (msg) => {
     if (selectionSubscriptionCount === 0) {
       figma.off("selectionchange", handleSelectionChange);
     }
+  } else if (msg.type === "get-file-info") {
+    // Get Figma file info for Linear integration
+    const fileKey = figma.fileKey || "";
+    const selection = figma.currentPage.selection;
+    const nodeId = selection.length === 1 ? selection[0].id : "";
+
+    postMessageToUI({
+      type: "file-info",
+      data: {
+        fileKey,
+        nodeId,
+      },
+    });
+  } else if (msg.type === "store-linear-config") {
+    // Store Linear config in Figma's client storage
+    await figma.clientStorage.setAsync("linearConfig", msg.config);
+  } else if (msg.type === "get-linear-config") {
+    // Retrieve Linear config from Figma's client storage
+    const config = await figma.clientStorage.getAsync("linearConfig");
+    postMessageToUI({
+      type: "linear-config-loaded",
+      config: config || null,
+    });
+  } else if (msg.type === "clear-linear-config") {
+    // Clear Linear config from Figma's client storage
+    await figma.clientStorage.deleteAsync("linearConfig");
   } else if (msg.type === "close") {
     figma.closePlugin();
   }

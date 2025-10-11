@@ -9,6 +9,10 @@
   "editorType": ["figma"],
   "ui": "dist/index.html",
   "networkAccess": {
-    "allowedDomains": ["none"]
+    "allowedDomains": [
+      "https://*.vercel.app",
+      "http://localhost:3000"
+    ],
+    "reasoning": "Required for sending coverage reports to Linear API via backend proxy"
   }
 }
