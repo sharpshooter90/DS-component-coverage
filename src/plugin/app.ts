@@ -213,6 +213,9 @@ figma.ui.onmessage = async (msg) => {
   } else if (msg.type === "clear-linear-config") {
     // Clear Linear config from Figma's client storage
     await figma.clientStorage.deleteAsync("linearConfig");
+  } else if (msg.type === "create-canvas-report") {
+    // Create canvas report with Linear issue link
+    await createCanvasReport(msg.analysis, msg.linearIssue, msg.assigneeEmail);
   } else if (msg.type === "close") {
     figma.closePlugin();
   }
@@ -220,6 +223,188 @@ figma.ui.onmessage = async (msg) => {
 
 function notifySelectionChange(nodeId: string | null) {
   postMessageToUI({ type: "selection-changed", nodeId });
+}
+
+async function createCanvasReport(
+  analysis: any,
+  linearIssue: any,
+  assigneeEmail?: string
+) {
+  try {
+    // Load font first
+    await figma.loadFontAsync({ family: "Inter", style: "Regular" });
+
+    const selection = figma.currentPage.selection;
+    if (selection.length === 0) {
+      figma.notify("Please select a frame first", { error: true });
+      return;
+    }
+
+    const selectedFrame = selection[0] as FrameNode;
+    if (selectedFrame.type !== "FRAME") {
+      figma.notify("Please select a frame", { error: true });
+      return;
+    }
+
+    // Determine severity based on coverage score
+    const coverageScore = analysis?.summary?.overallScore || 0;
+    let bgColor: RGB;
+    let textColor: RGB;
+    let severityLabel: string;
+
+    if (coverageScore >= 80) {
+      // High coverage - Green (success)
+      severityLabel = "Low Priority";
+      bgColor = { r: 0.9, g: 0.98, b: 0.92 }; // Light green
+      textColor = { r: 0.15, g: 0.52, b: 0.25 }; // Dark green
+    } else if (coverageScore >= 50) {
+      // Medium coverage - Yellow (warning)
+      severityLabel = "Medium Priority";
+      bgColor = { r: 1, g: 0.98, b: 0.86 }; // Light yellow
+      textColor = { r: 0.76, g: 0.55, b: 0.09 }; // Dark yellow/orange
+    } else {
+      // Low coverage - Red (critical)
+      severityLabel = "High Priority";
+      bgColor = { r: 1, g: 0.93, b: 0.93 }; // Light red
+      textColor = { r: 0.86, g: 0.18, b: 0.18 }; // Dark red
+    }
+
+    // Create the report frame with severity-based colors
+    const reportFrame = figma.createFrame();
+    reportFrame.name = `DS Non-Compliant Report - ${severityLabel}`;
+    reportFrame.layoutMode = "VERTICAL";
+    reportFrame.primaryAxisAlignItems = "MIN";
+    reportFrame.counterAxisAlignItems = "MIN";
+    reportFrame.paddingTop = 24;
+    reportFrame.paddingBottom = 24;
+    reportFrame.paddingLeft = 24;
+    reportFrame.paddingRight = 24;
+    reportFrame.itemSpacing = 16;
+    reportFrame.fills = [
+      {
+        type: "SOLID",
+        color: bgColor,
+      },
+    ];
+    reportFrame.cornerRadius = 8;
+    reportFrame.strokes = [
+      {
+        type: "SOLID",
+        color: textColor,
+        opacity: 0.3,
+      },
+    ];
+    reportFrame.strokeWeight = 2;
+
+    // Position the report frame 200px to the right of the selected frame
+    reportFrame.x = selectedFrame.x + selectedFrame.width + 200;
+    reportFrame.y = selectedFrame.y;
+
+    // Create title text with severity color
+    const titleText = figma.createText();
+    titleText.characters = "PS Non-Compliant";
+    titleText.fontSize = 24;
+    titleText.fills = [
+      {
+        type: "SOLID",
+        color: textColor,
+      },
+    ];
+    reportFrame.appendChild(titleText);
+
+    // Create severity badge
+    const severityText = figma.createText();
+    severityText.characters = `⚠️ ${severityLabel}`;
+    severityText.fontSize = 14;
+    severityText.fills = [
+      {
+        type: "SOLID",
+        color: textColor,
+        opacity: 0.8,
+      },
+    ];
+    reportFrame.appendChild(severityText);
+
+    // Create assignee text if provided
+    if (assigneeEmail) {
+      const assigneeText = figma.createText();
+      assigneeText.characters = `Assigned to: ${assigneeEmail}`;
+      assigneeText.fontSize = 16;
+      assigneeText.fills = [
+        {
+          type: "SOLID",
+          color: textColor,
+          opacity: 0.7,
+        },
+      ];
+      reportFrame.appendChild(assigneeText);
+    }
+
+    // Create coverage summary
+    const coverageText = figma.createText();
+    coverageText.characters = `Coverage: ${coverageScore.toFixed(1)}%`;
+    coverageText.fontSize = 16;
+    coverageText.fills = [
+      {
+        type: "SOLID",
+        color: textColor,
+        opacity: 0.9,
+      },
+    ];
+    reportFrame.appendChild(coverageText);
+
+    // Create Linear issue link with hyperlink
+    const linkText = figma.createText();
+    const linkLabel = `Linear Issue: ${linearIssue.identifier}`;
+    linkText.characters = linkLabel;
+    linkText.fontSize = 14;
+    linkText.fills = [
+      {
+        type: "SOLID",
+        color: textColor,
+        opacity: 0.8,
+      },
+    ];
+    // Add hyperlink to the entire text
+    linkText.setRangeHyperlink(0, linkLabel.length, {
+      type: "URL",
+      value: linearIssue.url,
+    });
+    reportFrame.appendChild(linkText);
+
+    // Create clickable URL text
+    const urlText = figma.createText();
+    urlText.characters = "View in Linear →";
+    urlText.fontSize = 12;
+    urlText.fills = [
+      {
+        type: "SOLID",
+        color: textColor,
+        opacity: 0.7,
+      },
+    ];
+    // Add hyperlink to the URL text
+    urlText.setRangeHyperlink(0, "View in Linear →".length, {
+      type: "URL",
+      value: linearIssue.url,
+    });
+    reportFrame.appendChild(urlText);
+
+    // Auto-resize the frame
+    reportFrame.resize(300, reportFrame.height);
+
+    // Add to current page
+    figma.currentPage.appendChild(reportFrame);
+
+    // Select the new report frame
+    figma.currentPage.selection = [reportFrame];
+    figma.viewport.scrollAndZoomIntoView([reportFrame]);
+
+    figma.notify("Canvas report created successfully!");
+  } catch (error) {
+    console.error("Error creating canvas report:", error);
+    figma.notify("Error creating canvas report", { error: true });
+  }
 }
 
 function handleSelectionChange() {

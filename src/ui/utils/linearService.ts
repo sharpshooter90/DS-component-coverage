@@ -153,7 +153,8 @@ class LinearService {
   async createIssue(
     analysis: CoverageAnalysis,
     figmaFileKey?: string,
-    figmaNodeId?: string
+    figmaNodeId?: string,
+    assigneeEmail?: string
   ): Promise<{ success: boolean; issue?: LinearIssue; error?: string }> {
     if (!this.config) {
       return { success: false, error: "Linear not configured" };
@@ -166,7 +167,7 @@ class LinearService {
       title,
       description,
       teamId: this.config.teamId,
-      assigneeEmail: this.config.assigneeEmail,
+      assigneeEmail: assigneeEmail || this.config.assigneeEmail,
       projectId: this.config.projectId,
       labelIds: this.config.labelIds,
       priority: this.config.priority,

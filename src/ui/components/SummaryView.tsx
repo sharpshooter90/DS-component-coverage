@@ -16,6 +16,8 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
     message: string;
     issue?: LinearIssue;
   }>({ type: null, message: "" });
+  const [assigneeEmail, setAssigneeEmail] = useState("");
+  const [showAssigneeSection, setShowAssigneeSection] = useState(false);
 
   const sortedEntries = React.useMemo(
     () =>
@@ -37,7 +39,8 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
     if (!config || !config.enabled) {
       setLinearStatus({
         type: "error",
-        message: "Linear integration not configured. Please configure in Settings.",
+        message:
+          "Linear integration not configured. Please configure in Settings.",
       });
       return;
     }
@@ -55,10 +58,7 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
 
     try {
       // Get Figma file info from parent
-      parent.postMessage(
-        { pluginMessage: { type: "get-file-info" } },
-        "*"
-      );
+      parent.postMessage({ pluginMessage: { type: "get-file-info" } }, "*");
 
       // Wait for file info response
       const fileInfo = await new Promise<{
@@ -83,7 +83,8 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
       const result = await linearService.createIssue(
         analysis,
         fileInfo.fileKey,
-        fileInfo.nodeId
+        fileInfo.nodeId,
+        assigneeEmail
       );
 
       if (result.success && result.issue) {
@@ -92,6 +93,19 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
           message: `Issue created successfully!`,
           issue: result.issue,
         });
+
+        // Create canvas report with Linear link
+        parent.postMessage(
+          {
+            pluginMessage: {
+              type: "create-canvas-report",
+              analysis: analysis,
+              linearIssue: result.issue,
+              assigneeEmail: assigneeEmail,
+            },
+          },
+          "*"
+        );
       } else {
         setLinearStatus({
           type: "error",
@@ -191,6 +205,75 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
       {linearConfig && linearConfig.enabled && (
         <div className="linear-section">
           <h3 className="export-title">Linear Integration</h3>
+
+          <button
+            onClick={() => setShowAssigneeSection(!showAssigneeSection)}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              fontSize: "11px",
+              fontWeight: 600,
+              border: "1px solid var(--border)",
+              borderRadius: "4px",
+              background: "var(--background)",
+              color: "var(--text-primary)",
+              cursor: "pointer",
+              marginBottom: "8px",
+            }}
+          >
+            {showAssigneeSection
+              ? "Hide Assignee Options"
+              : "Show Assignee Options"}
+          </button>
+
+          {showAssigneeSection && (
+            <div
+              style={{
+                marginBottom: "12px",
+                padding: "12px",
+                border: "1px solid var(--border)",
+                borderRadius: "6px",
+                background: "var(--background-secondary)",
+              }}
+            >
+              <label
+                style={{
+                  display: "block",
+                  fontSize: "11px",
+                  fontWeight: 600,
+                  marginBottom: "6px",
+                  color: "var(--text-primary)",
+                }}
+              >
+                Assign to (Optional)
+              </label>
+              <input
+                type="email"
+                value={assigneeEmail}
+                onChange={(e) => setAssigneeEmail(e.target.value)}
+                placeholder="teammate@company.com"
+                style={{
+                  width: "100%",
+                  padding: "8px 10px",
+                  fontSize: "11px",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  background: "var(--background)",
+                  color: "var(--text-primary)",
+                  marginBottom: "6px",
+                }}
+              />
+              <div
+                style={{
+                  fontSize: "10px",
+                  color: "var(--text-secondary)",
+                }}
+              >
+                Leave empty to create unassigned issue
+              </div>
+            </div>
+          )}
+
           <button
             className="btn btn-primary"
             onClick={handleSendToLinear}
@@ -202,7 +285,7 @@ const SummaryView: React.FC<SummaryViewProps> = ({ analysis, onExport }) => {
               fontWeight: 600,
             }}
           >
-            {isSendingToLinear ? "Creating Issue..." : "📋 Send to Linear"}
+            {isSendingToLinear ? "Creating Issue..." : "📋 Assign this report"}
           </button>
 
           {linearStatus.type && (

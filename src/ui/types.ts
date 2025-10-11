@@ -101,7 +101,13 @@ export type PluginMessage =
   | { type: "linear-config-loaded"; config: LinearConfig | null }
   | { type: "linear-issue-created"; issue: LinearIssue }
   | { type: "linear-error"; message: string }
-  | { type: "file-info"; data: { fileKey: string; nodeId: string } };
+  | { type: "file-info"; data: { fileKey: string; nodeId: string } }
+  | {
+      type: "create-canvas-report";
+      analysis: CoverageAnalysis;
+      linearIssue: LinearIssue;
+      assigneeEmail?: string;
+    };
 
 export interface RGB {
   r: number;
