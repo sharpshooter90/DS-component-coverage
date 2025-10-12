@@ -53,6 +53,37 @@ export interface AnalysisSettings {
   ignoredTypes: string[];
 }
 
+export interface AIRenameConfig {
+  apiKey?: string;
+  backendUrl: string;
+  model?: string;
+  temperature?: number;
+}
+
+export interface LayerDataForAI {
+  id: string;
+  name: string;
+  type: string;
+  parent?: string;
+  textContent?: string;
+  size?: { width: number; height: number };
+  childCount?: number;
+  depth: number;
+}
+
+export interface AIRenameContext {
+  frameName: string;
+  totalLayers: number;
+  chunkIndex: number;
+  totalChunks: number;
+}
+
+export interface RenamedLayer {
+  id: string;
+  oldName: string;
+  newName: string;
+}
+
 export interface LinearConfig {
   enabled: boolean;
   apiKey: string;
@@ -107,7 +138,23 @@ export type PluginMessage =
       analysis: CoverageAnalysis;
       linearIssue: LinearIssue;
       assigneeEmail?: string;
-    };
+    }
+  | { type: "ai-rename-started"; totalChunks: number }
+  | {
+      type: "ai-rename-chunk-request";
+      chunk: LayerDataForAI[];
+      context: AIRenameContext;
+    }
+  | {
+      type: "ai-rename-chunk-complete";
+      renamedLayers: RenamedLayer[];
+      chunkIndex: number;
+      renamedCount: number;
+      failedCount: number;
+    }
+  | { type: "ai-rename-complete"; totalRenamed: number; totalFailed: number }
+  | { type: "ai-rename-error"; message: string }
+  | { type: "ai-rename-config-loaded"; config: AIRenameConfig | null };
 
 export interface RGB {
   r: number;

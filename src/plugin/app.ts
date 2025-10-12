@@ -16,6 +16,11 @@ import {
   AutoLayoutDirection,
   convertFrameNodeToAutoLayout,
 } from "./utils/autoLayout";
+import {
+  chunkLayersByType,
+  serializeLayerForAI,
+  LayerDataForAI,
+} from "./utils/layerChunking";
 
 /// <reference types="@figma/plugin-typings" />
 
@@ -74,6 +79,32 @@ interface AnalysisSettings {
   ignoredTypes: string[];
 }
 
+interface AIRenameConfig {
+  apiKey?: string;
+  backendUrl: string;
+  model?: string;
+  temperature?: number;
+}
+
+interface AIRenameContext {
+  frameName: string;
+  totalLayers: number;
+  chunkIndex: number;
+  totalChunks: number;
+}
+
+interface RenamedLayer {
+  id: string;
+  oldName: string;
+  newName: string;
+}
+
+interface AIRenameStats {
+  totalChunks: number;
+  totalRenamed: number;
+  totalFailed: number;
+}
+
 // Default settings
 const defaultSettings: AnalysisSettings = {
   checkComponents: true,
@@ -84,8 +115,103 @@ const defaultSettings: AnalysisSettings = {
 };
 
 let currentSettings: AnalysisSettings = { ...defaultSettings };
+const AI_RENAME_CONFIG_KEY = "ai-rename-config";
+
+let aiRenameConfig: AIRenameConfig | null = null;
+let aiRenameInProgress = false;
+let aiRenameAbortRequested = false;
+let aiRenameWasCancelled = false;
+const aiRenameChunkResolvers = new Map<
+  number,
+  { resolve: () => void; reject: (error: Error) => void }
+>();
+let aiRenameStats: AIRenameStats = {
+  totalChunks: 0,
+  totalRenamed: 0,
+  totalFailed: 0,
+};
+const AI_RENAME_MAX_CHUNK_SIZE = 50;
+const AI_RENAME_ELIGIBLE_TYPES = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
 
 figma.showUI(__html__, { width: 480, height: 720 });
+void loadAIRenameConfig();
+
+async function loadAIRenameConfig() {
+  try {
+    const stored = (await figma.clientStorage.getAsync(
+      AI_RENAME_CONFIG_KEY
+    )) as AIRenameConfig | null;
+    aiRenameConfig = stored ?? null;
+    postMessageToUI({
+      type: "ai-rename-config-loaded",
+      config: aiRenameConfig,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (
+      errorMessage.includes("InvalidStateError") ||
+      errorMessage.includes("closing")
+    ) {
+      console.warn("Cannot load AI rename config: Storage is unavailable");
+    } else {
+      console.error("Failed to load AI rename config", error);
+    }
+    // Return null config on error
+    aiRenameConfig = null;
+    postMessageToUI({
+      type: "ai-rename-config-loaded",
+      config: null,
+    });
+  }
+}
+
+async function persistAIRenameConfig(
+  config: AIRenameConfig | null,
+  retries = 2
+): Promise<boolean> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      if (config) {
+        await figma.clientStorage.setAsync(AI_RENAME_CONFIG_KEY, config);
+      } else {
+        await figma.clientStorage.deleteAsync(AI_RENAME_CONFIG_KEY);
+      }
+      aiRenameConfig = config;
+      return true;
+    } catch (error) {
+      const isLastAttempt = attempt === retries;
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+
+      // Don't retry on InvalidStateError (DB closing) - it won't succeed
+      if (
+        errorMessage.includes("InvalidStateError") ||
+        errorMessage.includes("closing")
+      ) {
+        console.warn(
+          "Cannot persist AI rename config: Storage is unavailable (plugin may be closing)"
+        );
+        // Update in-memory config even if storage fails
+        aiRenameConfig = config;
+        return false;
+      }
+
+      if (isLastAttempt) {
+        console.error(
+          "Failed to persist AI rename config after retries:",
+          error
+        );
+        // Update in-memory config even if storage fails
+        aiRenameConfig = config;
+        return false;
+      }
+
+      // Wait before retry (exponential backoff)
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+  return false;
+}
 
 let selectionSubscriptionCount = 0;
 let lastAnalyzedNodeId: string | null = null;
@@ -106,6 +232,35 @@ figma.ui.onmessage = async (msg) => {
       type: "settings-updated",
       settings: currentSettings,
     });
+  } else if (msg.type === "store-ai-rename-config") {
+    await persistAIRenameConfig(msg.config ?? null);
+    postMessageToUI({
+      type: "ai-rename-config-loaded",
+      config: aiRenameConfig,
+    });
+  } else if (msg.type === "get-ai-rename-config") {
+    if (aiRenameConfig === null) {
+      await loadAIRenameConfig();
+    } else {
+      postMessageToUI({
+        type: "ai-rename-config-loaded",
+        config: aiRenameConfig,
+      });
+    }
+  } else if (msg.type === "clear-ai-rename-config") {
+    await persistAIRenameConfig(null);
+    postMessageToUI({
+      type: "ai-rename-config-loaded",
+      config: null,
+    });
+  } else if (msg.type === "ai-rename-selection") {
+    await handleAIRenameSelection();
+  } else if (msg.type === "apply-ai-rename-batch") {
+    await handleApplyAIRenameBatch(msg.renamedLayers, msg.chunkIndex);
+  } else if (msg.type === "ai-rename-chunk-error") {
+    handleAIRenameChunkError(msg.chunkIndex, msg.message);
+  } else if (msg.type === "cancel-ai-rename") {
+    cancelAIRenameWorkflow("Cancelled by user");
   } else if (msg.type === "select-layer") {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "id" in node) {
@@ -202,17 +357,60 @@ figma.ui.onmessage = async (msg) => {
     });
   } else if (msg.type === "store-linear-config") {
     // Store Linear config in Figma's client storage
-    await figma.clientStorage.setAsync("linearConfig", msg.config);
+    try {
+      await figma.clientStorage.setAsync("linearConfig", msg.config);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (
+        errorMessage.includes("InvalidStateError") ||
+        errorMessage.includes("closing")
+      ) {
+        console.warn("Cannot store Linear config: Storage is unavailable");
+      } else {
+        console.error("Failed to store Linear config", error);
+      }
+    }
   } else if (msg.type === "get-linear-config") {
     // Retrieve Linear config from Figma's client storage
-    const config = await figma.clientStorage.getAsync("linearConfig");
-    postMessageToUI({
-      type: "linear-config-loaded",
-      config: config || null,
-    });
+    try {
+      const config = await figma.clientStorage.getAsync("linearConfig");
+      postMessageToUI({
+        type: "linear-config-loaded",
+        config: config || null,
+      });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (
+        errorMessage.includes("InvalidStateError") ||
+        errorMessage.includes("closing")
+      ) {
+        console.warn("Cannot load Linear config: Storage is unavailable");
+      } else {
+        console.error("Failed to load Linear config", error);
+      }
+      postMessageToUI({
+        type: "linear-config-loaded",
+        config: null,
+      });
+    }
   } else if (msg.type === "clear-linear-config") {
     // Clear Linear config from Figma's client storage
-    await figma.clientStorage.deleteAsync("linearConfig");
+    try {
+      await figma.clientStorage.deleteAsync("linearConfig");
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      if (
+        errorMessage.includes("InvalidStateError") ||
+        errorMessage.includes("closing")
+      ) {
+        console.warn("Cannot clear Linear config: Storage is unavailable");
+      } else {
+        console.error("Failed to clear Linear config", error);
+      }
+    }
   } else if (msg.type === "create-canvas-report") {
     // Create canvas report with Linear issue link
     await createCanvasReport(msg.analysis, msg.linearIssue, msg.assigneeEmail);
@@ -220,6 +418,281 @@ figma.ui.onmessage = async (msg) => {
     figma.closePlugin();
   }
 };
+
+async function handleAIRenameSelection() {
+  if (aiRenameInProgress) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "AI rename is already running.",
+    });
+    return;
+  }
+
+  const selection = figma.currentPage.selection;
+  if (selection.length !== 1) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "Select a single frame, component, or instance to rename.",
+    });
+    return;
+  }
+
+  const root = selection[0];
+  if (!isAIRenameEligible(root)) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "AI rename supports frames, components, or instances only.",
+    });
+    return;
+  }
+
+  if (!aiRenameConfig || !aiRenameConfig.backendUrl) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "Configure an AI rename backend before running the workflow.",
+    });
+    return;
+  }
+
+  const layers = collectAIRenameLayers(root);
+  if (!layers.length) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "No unlocked or visible layers found to rename.",
+    });
+    return;
+  }
+
+  const chunks = chunkLayersByType(layers, AI_RENAME_MAX_CHUNK_SIZE);
+  if (!chunks.length) {
+    postMessageToUI({
+      type: "ai-rename-error",
+      message: "Unable to prepare AI rename chunks.",
+    });
+    return;
+  }
+
+  aiRenameInProgress = true;
+  aiRenameAbortRequested = false;
+  aiRenameStats = {
+    totalChunks: chunks.length,
+    totalRenamed: 0,
+    totalFailed: 0,
+  };
+
+  postMessageToUI({
+    type: "ai-rename-started",
+    totalChunks: chunks.length,
+  });
+
+  for (let index = 0; index < chunks.length; index++) {
+    if (aiRenameAbortRequested) {
+      break;
+    }
+
+    const chunk = chunks[index];
+    const context: AIRenameContext = {
+      frameName: root.name,
+      totalLayers: layers.length,
+      chunkIndex: index,
+      totalChunks: chunks.length,
+    };
+
+    const chunkPromise = new Promise<void>((resolve, reject) => {
+      aiRenameChunkResolvers.set(index, { resolve, reject });
+    });
+
+    postMessageToUI({
+      type: "ai-rename-chunk-request",
+      chunk: chunk.layers,
+      context,
+    });
+
+    try {
+      await chunkPromise;
+    } catch (error) {
+      if (!aiRenameAbortRequested && !aiRenameWasCancelled) {
+        postMessageToUI({
+          type: "ai-rename-error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "AI rename failed while processing a chunk.",
+        });
+      }
+      cleanupAIRenameState();
+      return;
+    } finally {
+      aiRenameChunkResolvers.delete(index);
+    }
+  }
+
+  const wasCancelled = aiRenameAbortRequested || aiRenameWasCancelled;
+  const summary = { ...aiRenameStats };
+  cleanupAIRenameState();
+
+  if (wasCancelled) {
+    return;
+  }
+
+  postMessageToUI({
+    type: "ai-rename-complete",
+    totalRenamed: summary.totalRenamed,
+    totalFailed: summary.totalFailed,
+  });
+}
+
+function isAIRenameEligible(node: SceneNode): boolean {
+  return AI_RENAME_ELIGIBLE_TYPES.has(node.type);
+}
+
+function collectAIRenameLayers(root: SceneNode): LayerDataForAI[] {
+  const collected: LayerDataForAI[] = [];
+  const stack: Array<{ node: SceneNode; depth: number }> = [
+    { node: root, depth: 0 },
+  ];
+
+  while (stack.length) {
+    const { node, depth } = stack.pop()!;
+
+    if (shouldSkipNodeForAIRename(node)) {
+      continue;
+    }
+
+    collected.push(serializeLayerForAI(node, depth));
+
+    if ("children" in node) {
+      const children = [...((node as any).children as SceneNode[])].reverse();
+      children.forEach((child) =>
+        stack.push({ node: child, depth: depth + 1 })
+      );
+    }
+  }
+
+  return collected;
+}
+
+function shouldSkipNodeForAIRename(node: SceneNode): boolean {
+  if ("visible" in node && !node.visible) {
+    return true;
+  }
+  if ("locked" in node && node.locked) {
+    return true;
+  }
+  if (node.type === "SLICE") {
+    return true;
+  }
+  return false;
+}
+
+async function handleApplyAIRenameBatch(
+  renamedLayers: RenamedLayer[] = [],
+  chunkIndex: number
+) {
+  if (!aiRenameInProgress) {
+    console.warn("Received AI rename batch with no active workflow");
+    return;
+  }
+
+  const resolver = aiRenameChunkResolvers.get(chunkIndex);
+  if (!resolver) {
+    console.warn(`No resolver registered for AI rename chunk ${chunkIndex}`);
+    return;
+  }
+
+  try {
+    const { renamed, failed } = await applyLayerRenames(renamedLayers);
+    aiRenameStats.totalRenamed += renamed;
+    aiRenameStats.totalFailed += failed;
+
+    postMessageToUI({
+      type: "ai-rename-chunk-complete",
+      renamedLayers,
+      chunkIndex,
+      renamedCount: renamed,
+      failedCount: failed,
+    });
+
+    resolver.resolve();
+  } catch (error) {
+    resolver.reject(
+      error instanceof Error
+        ? error
+        : new Error("Failed to apply AI rename batch.")
+    );
+  } finally {
+    aiRenameChunkResolvers.delete(chunkIndex);
+  }
+}
+
+function handleAIRenameChunkError(chunkIndex: number, message?: string) {
+  aiRenameAbortRequested = true;
+  aiRenameWasCancelled = false;
+  const resolver = aiRenameChunkResolvers.get(chunkIndex);
+  if (resolver) {
+    resolver.reject(new Error(message ?? "AI rename chunk failed."));
+    aiRenameChunkResolvers.delete(chunkIndex);
+  }
+
+  postMessageToUI({
+    type: "ai-rename-error",
+    message: message ?? "AI rename chunk failed.",
+  });
+}
+
+function cancelAIRenameWorkflow(reason: string) {
+  if (!aiRenameInProgress) {
+    return;
+  }
+
+  aiRenameAbortRequested = true;
+  aiRenameWasCancelled = true;
+  aiRenameChunkResolvers.forEach(({ reject }) => {
+    reject(new Error(reason));
+  });
+  aiRenameChunkResolvers.clear();
+  postMessageToUI({
+    type: "ai-rename-error",
+    message: reason,
+  });
+}
+
+async function applyLayerRenames(renamedLayers: RenamedLayer[]) {
+  let renamed = 0;
+  let failed = 0;
+
+  for (const layer of renamedLayers) {
+    const node = await figma.getNodeByIdAsync(layer.id);
+    if (!node || !("name" in node)) {
+      failed++;
+      continue;
+    }
+
+    try {
+      if ((node as SceneNode).name !== layer.newName) {
+        (node as SceneNode).name = layer.newName;
+        renamed++;
+      }
+    } catch (error) {
+      console.warn(`Failed to rename layer ${layer.id}`, error);
+      failed++;
+    }
+  }
+
+  return { renamed, failed };
+}
+
+function cleanupAIRenameState() {
+  aiRenameChunkResolvers.clear();
+  aiRenameInProgress = false;
+  aiRenameAbortRequested = false;
+  aiRenameWasCancelled = false;
+  aiRenameStats = {
+    totalChunks: 0,
+    totalRenamed: 0,
+    totalFailed: 0,
+  };
+}
 
 function notifySelectionChange(nodeId: string | null) {
   postMessageToUI({ type: "selection-changed", nodeId });

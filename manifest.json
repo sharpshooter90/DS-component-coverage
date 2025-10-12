@@ -11,8 +11,9 @@
   "networkAccess": {
     "allowedDomains": [
       "https://*.vercel.app",
-      "http://localhost:3000"
+      "http://localhost:3000",
+      "http://localhost:3001"
     ],
-    "reasoning": "Required for sending coverage reports to Linear API via backend proxy"
+    "reasoning": "Required for Linear API backend (port 3000) and AI rename backend (port 3001)"
   }
 }

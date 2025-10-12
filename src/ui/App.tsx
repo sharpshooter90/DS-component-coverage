@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import SummaryView from "./components/SummaryView";
@@ -8,8 +8,22 @@ import ErrorMessage from "./components/ErrorMessage";
 import ProgressIndicator from "./components/ProgressIndicator";
 import FixWizard from "./components/FixWizard";
 import DebugView from "./components/DebugView";
+import AIRenameView from "./components/AIRenameView";
+import ApiKeyModal from "./components/ApiKeyModal";
+import AIRenameProgress from "./components/AIRenameProgress";
+import {
+  AIRenameConfig,
+  AIRenameContext,
+  LayerDataForAI,
+  RenamedLayer,
+} from "./types";
+import { AIRenameService } from "./utils/aiRenameService";
 
-type ViewType = "summary" | "detailed" | "settings";
+type ViewType = "summary" | "detailed" | "settings" | "ai-rename";
+
+// For local testing, use http://localhost:3001
+// For production, replace with your Vercel deployment URL
+const DEFAULT_BACKEND_URL = "http://localhost:3001";
 
 interface CoverageAnalysis {
   summary: {
@@ -71,9 +85,31 @@ function App() {
   const [showDebugView, setShowDebugView] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [showSuccessMessage, setShowSuccessMessage] = useState(false);
+  const [hasSelection, setHasSelection] = useState(false);
+  const [isAIRenaming, setIsAIRenaming] = useState(false);
+  const [aiRenameProgress, setAIRenameProgress] = useState({
+    current: 0,
+    total: 0,
+  });
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [aiRenameConfig, setAIRenameConfig] = useState<AIRenameConfig | null>(
+    null
+  );
+  const [aiStatusMessage, setAIStatusMessage] = useState<string | null>(null);
+  const [aiRenameCounts, setAIRenameCounts] = useState({
+    renamed: 0,
+    failed: 0,
+  });
+  const [pendingAIRename, setPendingAIRename] = useState(false);
+
+  const aiRenameServiceRef = useRef<AIRenameService | null>(null);
 
   useEffect(() => {
     window.parent.postMessage({ pluginMessage: { type: "get-settings" } }, "*");
+    window.parent.postMessage(
+      { pluginMessage: { type: "get-ai-rename-config" } },
+      "*"
+    );
 
     const handleMessage = (event: MessageEvent) => {
       const msg = event.data.pluginMessage;
@@ -103,6 +139,7 @@ function App() {
         setDebugData(msg.debugData);
         setShowDebugView(true);
       } else if (msg.type === "selection-changed") {
+        setHasSelection(Boolean(msg.nodeId));
         if (!msg.nodeId) {
           setAnalysis(null);
           setView("summary");
@@ -112,6 +149,41 @@ function App() {
             "*"
           );
         }
+      } else if (msg.type === "ai-rename-config-loaded") {
+        setAIRenameConfig(msg.config ?? null);
+      } else if (msg.type === "ai-rename-started") {
+        setIsAIRenaming(true);
+        setAIRenameProgress({ current: 0, total: msg.totalChunks });
+        setAIStatusMessage("Preparing layers…");
+        setAIRenameCounts({ renamed: 0, failed: 0 });
+      } else if (msg.type === "ai-rename-chunk-request") {
+        setAIRenameProgress({
+          current: msg.context.chunkIndex + 1,
+          total: msg.context.totalChunks,
+        });
+        setAIStatusMessage("Generating names with Gemini…");
+        handleAIRenameChunk(msg.chunk, msg.context);
+      } else if (msg.type === "ai-rename-chunk-complete") {
+        setAIRenameCounts((previous) => ({
+          renamed: previous.renamed + (msg.renamedCount ?? 0),
+          failed: previous.failed + (msg.failedCount ?? 0),
+        }));
+        setAIStatusMessage("Applied rename suggestions in Figma");
+      } else if (msg.type === "ai-rename-complete") {
+        setIsAIRenaming(false);
+        setAIStatusMessage("AI rename complete");
+        setAIRenameCounts({
+          renamed: msg.totalRenamed,
+          failed: msg.totalFailed,
+        });
+        setAIRenameProgress((previous) => ({
+          current: previous.total,
+          total: previous.total,
+        }));
+      } else if (msg.type === "ai-rename-error") {
+        setError(msg.message);
+        setIsAIRenaming(false);
+        setAIStatusMessage(null);
       }
     };
 
@@ -130,6 +202,16 @@ function App() {
       );
     };
   }, []);
+
+  useEffect(() => {
+    if (aiRenameConfig?.backendUrl) {
+      aiRenameServiceRef.current = new AIRenameService(
+        aiRenameConfig.backendUrl
+      );
+    } else {
+      aiRenameServiceRef.current = null;
+    }
+  }, [aiRenameConfig?.backendUrl]);
 
   const handleAnalyze = () => {
     window.parent.postMessage(
@@ -155,6 +237,152 @@ function App() {
     } else if (format === "csv") {
       exportCSV(analysis);
     }
+  };
+
+  const triggerAIRename = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "ai-rename-selection" } },
+      "*"
+    );
+  };
+
+  const handleAIRename = () => {
+    if (isAnalyzing || isAIRenaming) return;
+
+    if (!hasSelection) {
+      setError("Select a frame or component before running AI Rename.");
+      return;
+    }
+
+    if (!aiRenameConfig?.backendUrl) {
+      setShowApiKeyModal(true);
+      setPendingAIRename(true);
+      return;
+    }
+
+    setError(null);
+    triggerAIRename();
+  };
+
+  const handleAIRenameChunk = async (
+    chunk: LayerDataForAI[],
+    context: AIRenameContext
+  ) => {
+    const service = aiRenameServiceRef.current;
+
+    if (!service) {
+      const message =
+        "AI rename backend is not configured. Please set it up in AI Rename settings.";
+      setError(message);
+      window.parent.postMessage(
+        {
+          pluginMessage: {
+            type: "ai-rename-chunk-error",
+            message,
+            chunkIndex: context.chunkIndex,
+          },
+        },
+        "*"
+      );
+      return;
+    }
+
+    try {
+      const renamedLayers = await service.renameLayersWithAI(chunk, context, {
+        apiKey: aiRenameConfig?.apiKey,
+        model: aiRenameConfig?.model,
+        temperature: aiRenameConfig?.temperature,
+      });
+
+      setAIStatusMessage(
+        renamedLayers.length === 0
+          ? "No rename suggestions for this chunk."
+          : "Sending rename suggestions to Figma…"
+      );
+
+      window.parent.postMessage(
+        {
+          pluginMessage: {
+            type: "apply-ai-rename-batch",
+            renamedLayers,
+            chunkIndex: context.chunkIndex,
+          },
+        },
+        "*"
+      );
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to generate rename suggestions.";
+      setError(message);
+      setAIStatusMessage("AI rename interrupted");
+      window.parent.postMessage(
+        {
+          pluginMessage: {
+            type: "ai-rename-chunk-error",
+            message,
+            chunkIndex: context.chunkIndex,
+          },
+        },
+        "*"
+      );
+    }
+  };
+
+  const handleSaveAIRenameConfig = (config: AIRenameConfig) => {
+    const normalized: AIRenameConfig = {
+      backendUrl: config.backendUrl || DEFAULT_BACKEND_URL,
+      apiKey: config.apiKey,
+      model: config.model,
+      temperature: config.temperature,
+    };
+
+    setAIRenameConfig(normalized);
+    window.parent.postMessage(
+      { pluginMessage: { type: "store-ai-rename-config", config: normalized } },
+      "*"
+    );
+    setShowApiKeyModal(false);
+
+    if (pendingAIRename) {
+      setPendingAIRename(false);
+      triggerAIRename();
+    }
+  };
+
+  const handleSkipAIRenameConfig = () => {
+    const fallback =
+      aiRenameConfig ||
+      ({
+        backendUrl: DEFAULT_BACKEND_URL,
+      } as AIRenameConfig);
+
+    setAIRenameConfig(fallback);
+    window.parent.postMessage(
+      { pluginMessage: { type: "store-ai-rename-config", config: fallback } },
+      "*"
+    );
+    setShowApiKeyModal(false);
+
+    if (pendingAIRename) {
+      setPendingAIRename(false);
+      triggerAIRename();
+    }
+  };
+
+  const handleCancelAIRename = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "cancel-ai-rename" } },
+      "*"
+    );
+    setIsAIRenaming(false);
+    setAIStatusMessage("AI rename cancelled");
+  };
+
+  const handleCloseApiKeyModal = () => {
+    setShowApiKeyModal(false);
+    setPendingAIRename(false);
   };
 
   const handleSelectLayer = (layerId: string) => {
@@ -216,6 +444,18 @@ function App() {
             </button>
           )}
           <button
+            className="btn btn-secondary"
+            onClick={handleAIRename}
+            disabled={isAnalyzing || isAIRenaming || !hasSelection}
+            title={
+              !hasSelection
+                ? "Select a frame or component to enable AI Rename"
+                : "AI-powered layer naming"
+            }
+          >
+            ✨ AI Rename
+          </button>
+          <button
             className="btn btn-primary"
             onClick={handleAnalyze}
             disabled={isAnalyzing}
@@ -263,6 +503,12 @@ function App() {
             >
               Settings
             </button>
+            <button
+              className={`tab ${view === "ai-rename" ? "active" : ""}`}
+              onClick={() => setView("ai-rename")}
+            >
+              AI Rename
+            </button>
           </nav>
 
           <main className="content">
@@ -288,6 +534,7 @@ function App() {
                 onUpdateSettings={handleUpdateSettings}
               />
             )}
+            {view === "ai-rename" && <AIRenameView />}
           </main>
         </>
       )}
@@ -337,6 +584,24 @@ function App() {
           }}
         />
       )}
+
+      <ApiKeyModal
+        isOpen={showApiKeyModal}
+        initialConfig={aiRenameConfig}
+        onSave={handleSaveAIRenameConfig}
+        onSkip={handleSkipAIRenameConfig}
+        onClose={handleCloseApiKeyModal}
+      />
+
+      <AIRenameProgress
+        isOpen={isAIRenaming}
+        currentChunk={aiRenameProgress.current}
+        totalChunks={aiRenameProgress.total}
+        renamedCount={aiRenameCounts.renamed}
+        failedCount={aiRenameCounts.failed}
+        statusMessage={aiStatusMessage ?? undefined}
+        onCancel={handleCancelAIRename}
+      />
     </div>
   );
 }
