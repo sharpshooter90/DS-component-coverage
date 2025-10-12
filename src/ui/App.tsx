@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+} from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import SummaryView from "./components/SummaryView";
@@ -18,6 +24,7 @@ import {
   RenamedLayer,
   NamingTemplate,
   LayerNamingRule,
+  AIRenameDebugEvent,
 } from "./types";
 import { AIRenameService } from "./utils/aiRenameService";
 
@@ -360,6 +367,9 @@ function App() {
     historyDepth: 0,
     redoDepth: 0,
   });
+  const [aiRenameDebugEvents, setAIRenameDebugEvents] = useState<
+    AIRenameDebugEvent[]
+  >([]);
 
   const aiRenameServiceRef = useRef<AIRenameService | null>(null);
 
@@ -373,6 +383,19 @@ function App() {
 
   const updateAIRenameConfig = (partial: Partial<AIRenameConfig>) => {
     const normalized = normalizeAIRenameConfig(aiRenameConfig, partial);
+    window.parent.postMessage(
+      {
+        pluginMessage: {
+          type: "ai-rename-ui-debug",
+          phase: "config",
+          data: {
+            incoming: partial,
+            normalized,
+          },
+        },
+      },
+      "*"
+    );
     persistAIRenameConfigToPlugin(normalized);
   };
 
@@ -385,6 +408,205 @@ function App() {
       excludePatterns: [...(source.excludePatterns ?? [])],
     };
   }, [aiRenameConfig]);
+
+  useEffect(() => {
+    if (aiRenameConfig?.backendUrl) {
+      aiRenameServiceRef.current = new AIRenameService(
+        aiRenameConfig.backendUrl
+      );
+    } else {
+      aiRenameServiceRef.current = null;
+    }
+  }, [aiRenameConfig?.backendUrl]);
+
+  const handleAnalyze = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "analyze-selection" } },
+      "*"
+    );
+  };
+
+  const handleUpdateSettings = (newSettings: Partial<Settings>) => {
+    const updated = { ...settings, ...newSettings };
+    setSettings(updated);
+    window.parent.postMessage(
+      { pluginMessage: { type: "update-settings", settings: updated } },
+      "*"
+    );
+  };
+
+  const handleExport = (format: "json" | "csv") => {
+    if (!analysis) return;
+
+    if (format === "json") {
+      exportJSON(analysis);
+    } else if (format === "csv") {
+      exportCSV(analysis);
+    }
+  };
+
+  const triggerAIRename = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "ai-rename-selection" } },
+      "*"
+    );
+  };
+
+  const handleAIRename = () => {
+    if (isAnalyzing || isAIRenaming) return;
+
+    if (!hasSelection) {
+      setError("Select a frame or component before running AI Rename.");
+      return;
+    }
+
+    if (!aiRenameConfig?.backendUrl) {
+      setShowApiKeyModal(true);
+      setPendingAIRename(true);
+      return;
+    }
+
+    setError(null);
+    triggerAIRename();
+  };
+
+  const handleAIRenameChunk = useCallback(
+    async (chunk: LayerDataForAI[], context: AIRenameContext) => {
+      const service = aiRenameServiceRef.current;
+
+      if (!service) {
+        const message =
+          "AI rename backend is not configured. Please set it up in AI Rename settings.";
+        setError(message);
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "ai-rename-chunk-error",
+              message,
+              chunkIndex: context.chunkIndex,
+            },
+          },
+          "*"
+        );
+        return;
+      }
+
+      try {
+        const configOverrides = {
+          apiKey: effectiveAIRenameConfig.apiKey,
+          model: effectiveAIRenameConfig.model,
+          temperature: effectiveAIRenameConfig.temperature,
+          namingConvention: effectiveAIRenameConfig.namingConvention,
+          customNamingPattern: effectiveAIRenameConfig.customNamingPattern,
+          namingTemplates: effectiveAIRenameConfig.namingTemplates,
+          layerTypeRules: effectiveAIRenameConfig.layerTypeRules,
+          excludePatterns: effectiveAIRenameConfig.excludePatterns,
+          reviewMode: effectiveAIRenameConfig.reviewMode,
+          undoHistoryLimit: effectiveAIRenameConfig.undoHistoryLimit,
+          batchSize: effectiveAIRenameConfig.batchSize,
+        };
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "ai-rename-ui-debug",
+              phase: "chunk-request",
+              chunkIndex: context.chunkIndex,
+              data: configOverrides,
+            },
+          },
+          "*"
+        );
+
+        const renamedLayers = await service.renameLayersWithAI(
+          chunk,
+          context,
+          {
+            ...configOverrides,
+          }
+        );
+
+        if (aiRenameConfig?.reviewMode) {
+          if (renamedLayers.length === 0) {
+            setAIStatusMessage("No rename suggestions for this chunk.");
+            window.parent.postMessage(
+              {
+                pluginMessage: {
+                  type: "apply-ai-rename-batch",
+                  renamedLayers: [],
+                  chunkIndex: context.chunkIndex,
+                },
+              },
+              "*"
+            );
+            return;
+          }
+
+          setRenameReviewQueue((previous) => {
+            const withoutCurrent = previous.filter(
+              (item) => item.chunkIndex !== context.chunkIndex
+            );
+            return [
+              ...withoutCurrent,
+              {
+                chunkIndex: context.chunkIndex,
+                context,
+                renamedLayers,
+                originalLayers: chunk,
+              },
+            ];
+          });
+          setAIStatusMessage(
+            `Review ${renamedLayers.length} rename suggestion${
+              renamedLayers.length === 1 ? "" : "s"
+            }`
+          );
+          setView("ai-rename");
+          return;
+        }
+
+        setAIStatusMessage(
+          renamedLayers.length === 0
+            ? "No rename suggestions for this chunk."
+            : "Sending rename suggestions to Figma…"
+        );
+
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "apply-ai-rename-batch",
+              renamedLayers,
+              chunkIndex: context.chunkIndex,
+            },
+          },
+          "*"
+        );
+      } catch (err) {
+        const message =
+          err instanceof Error
+            ? err.message
+            : "Failed to generate rename suggestions.";
+        setError(message);
+        setAIStatusMessage("AI rename interrupted");
+        window.parent.postMessage(
+          {
+            pluginMessage: {
+              type: "ai-rename-chunk-error",
+              message,
+              chunkIndex: context.chunkIndex,
+            },
+          },
+          "*"
+        );
+      }
+    },
+    [aiRenameConfig, effectiveAIRenameConfig]
+  );
+
+  const handleAIRenameChunkRef = useRef(handleAIRenameChunk);
+
+  useEffect(() => {
+    handleAIRenameChunkRef.current = handleAIRenameChunk;
+  }, [handleAIRenameChunk]);
 
   useEffect(() => {
     window.parent.postMessage({ pluginMessage: { type: "get-settings" } }, "*");
@@ -449,7 +671,7 @@ function App() {
           total: msg.context.totalChunks,
         });
         setAIStatusMessage("Generating names with Gemini…");
-        handleAIRenameChunk(msg.chunk, msg.context);
+        handleAIRenameChunkRef.current?.(msg.chunk, msg.context);
       } else if (msg.type === "ai-rename-chunk-complete") {
         setAIRenameCounts((previous) => ({
           renamed: previous.renamed + (msg.renamedCount ?? 0),
@@ -505,6 +727,11 @@ function App() {
         } else {
           setError(msg.message ?? "Failed to redo AI rename.");
         }
+      } else if (msg.type === "ai-rename-debug") {
+        setAIRenameDebugEvents((previous) => {
+          const next = [...previous, msg.event];
+          return next.slice(-100);
+        });
       }
     };
 
@@ -523,180 +750,6 @@ function App() {
       );
     };
   }, []);
-
-  useEffect(() => {
-    if (aiRenameConfig?.backendUrl) {
-      aiRenameServiceRef.current = new AIRenameService(
-        aiRenameConfig.backendUrl
-      );
-    } else {
-      aiRenameServiceRef.current = null;
-    }
-  }, [aiRenameConfig?.backendUrl]);
-
-  const handleAnalyze = () => {
-    window.parent.postMessage(
-      { pluginMessage: { type: "analyze-selection" } },
-      "*"
-    );
-  };
-
-  const handleUpdateSettings = (newSettings: Partial<Settings>) => {
-    const updated = { ...settings, ...newSettings };
-    setSettings(updated);
-    window.parent.postMessage(
-      { pluginMessage: { type: "update-settings", settings: updated } },
-      "*"
-    );
-  };
-
-  const handleExport = (format: "json" | "csv") => {
-    if (!analysis) return;
-
-    if (format === "json") {
-      exportJSON(analysis);
-    } else if (format === "csv") {
-      exportCSV(analysis);
-    }
-  };
-
-  const triggerAIRename = () => {
-    window.parent.postMessage(
-      { pluginMessage: { type: "ai-rename-selection" } },
-      "*"
-    );
-  };
-
-  const handleAIRename = () => {
-    if (isAnalyzing || isAIRenaming) return;
-
-    if (!hasSelection) {
-      setError("Select a frame or component before running AI Rename.");
-      return;
-    }
-
-    if (!aiRenameConfig?.backendUrl) {
-      setShowApiKeyModal(true);
-      setPendingAIRename(true);
-      return;
-    }
-
-    setError(null);
-    triggerAIRename();
-  };
-
-  const handleAIRenameChunk = async (
-    chunk: LayerDataForAI[],
-    context: AIRenameContext
-  ) => {
-    const service = aiRenameServiceRef.current;
-
-    if (!service) {
-      const message =
-        "AI rename backend is not configured. Please set it up in AI Rename settings.";
-      setError(message);
-      window.parent.postMessage(
-        {
-          pluginMessage: {
-            type: "ai-rename-chunk-error",
-            message,
-            chunkIndex: context.chunkIndex,
-          },
-        },
-        "*"
-      );
-      return;
-    }
-
-    try {
-      const renamedLayers = await service.renameLayersWithAI(chunk, context, {
-        apiKey: aiRenameConfig?.apiKey,
-        model: aiRenameConfig?.model,
-        temperature: aiRenameConfig?.temperature,
-        namingConvention: aiRenameConfig?.namingConvention,
-        customNamingPattern: aiRenameConfig?.customNamingPattern,
-        namingTemplates: aiRenameConfig?.namingTemplates,
-        layerTypeRules: aiRenameConfig?.layerTypeRules,
-        excludePatterns: aiRenameConfig?.excludePatterns,
-        reviewMode: aiRenameConfig?.reviewMode,
-        undoHistoryLimit: aiRenameConfig?.undoHistoryLimit,
-        batchSize: aiRenameConfig?.batchSize,
-      });
-
-      if (aiRenameConfig?.reviewMode) {
-        if (renamedLayers.length === 0) {
-          setAIStatusMessage("No rename suggestions for this chunk.");
-          window.parent.postMessage(
-            {
-              pluginMessage: {
-                type: "apply-ai-rename-batch",
-                renamedLayers: [],
-                chunkIndex: context.chunkIndex,
-              },
-            },
-            "*"
-          );
-          return;
-        }
-
-        setRenameReviewQueue((previous) => {
-          const withoutCurrent = previous.filter(
-            (item) => item.chunkIndex !== context.chunkIndex
-          );
-          return [
-            ...withoutCurrent,
-            {
-              chunkIndex: context.chunkIndex,
-              context,
-              renamedLayers,
-              originalLayers: chunk,
-            },
-          ];
-        });
-        setAIStatusMessage(
-          `Review ${renamedLayers.length} rename suggestion${
-            renamedLayers.length === 1 ? "" : "s"
-          }`
-        );
-        setView("ai-rename");
-        return;
-      }
-
-      setAIStatusMessage(
-        renamedLayers.length === 0
-          ? "No rename suggestions for this chunk."
-          : "Sending rename suggestions to Figma…"
-      );
-
-      window.parent.postMessage(
-        {
-          pluginMessage: {
-            type: "apply-ai-rename-batch",
-            renamedLayers,
-            chunkIndex: context.chunkIndex,
-          },
-        },
-        "*"
-      );
-    } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "Failed to generate rename suggestions.";
-      setError(message);
-      setAIStatusMessage("AI rename interrupted");
-      window.parent.postMessage(
-        {
-          pluginMessage: {
-            type: "ai-rename-chunk-error",
-            message,
-            chunkIndex: context.chunkIndex,
-          },
-        },
-        "*"
-      );
-    }
-  };
 
   const handleApproveRenameChunk = (
     chunkIndex: number,
@@ -944,6 +997,7 @@ function App() {
                 isRenaming={isAIRenaming}
                 renameCounts={aiRenameCounts}
                 progress={aiRenameProgress}
+                debugEvents={aiRenameDebugEvents}
               />
             )}
           </main>

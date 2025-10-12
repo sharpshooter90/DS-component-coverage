@@ -77,6 +77,22 @@ export interface LayerNamingRule {
   example?: string;
 }
 
+export interface AIRenameDebugEvent {
+  timestamp: number;
+  phase:
+    | "selection"
+    | "chunk-request"
+    | "chunk-complete"
+    | "apply"
+    | "error"
+    | "history"
+    | "config";
+  message: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  data?: Record<string, unknown>;
+}
+
 export interface AIRenameConfig {
   apiKey?: string;
   backendUrl: string;
@@ -209,7 +225,8 @@ export type PluginMessage =
       applied: number;
       failed: number;
       message?: string;
-    };
+    }
+  | { type: "ai-rename-debug"; event: AIRenameDebugEvent };
 
 export interface RGB {
   r: number;

@@ -118,6 +118,21 @@ interface RenamedLayer {
   newName: string;
 }
 
+interface AIRenameDebugEvent {
+  phase:
+    | "selection"
+    | "chunk-request"
+    | "chunk-complete"
+    | "apply"
+    | "error"
+    | "history"
+    | "config";
+  message: string;
+  chunkIndex?: number;
+  totalChunks?: number;
+  data?: Record<string, unknown>;
+}
+
 interface AIRenameStats {
   totalChunks: number;
   totalRenamed: number;
@@ -164,6 +179,41 @@ figma.showUI(__html__, { width: 480, height: 720 });
 void loadAIRenameConfig();
 postAIRenameHistoryStatus();
 
+function postAIRenameDebug(event: AIRenameDebugEvent) {
+  postMessageToUI({
+    type: "ai-rename-debug",
+    event: {
+      ...event,
+      timestamp: Date.now(),
+    },
+  });
+}
+
+function getAIRenameConfigSnapshot(): Record<string, unknown> {
+  if (!aiRenameConfig) {
+    return { configured: false };
+  }
+
+  const { apiKey, ...rest } = aiRenameConfig;
+  return {
+    configured: true,
+    ...rest,
+    apiKey: apiKey ? "***redacted***" : undefined,
+  };
+}
+
+function sanitizeIncomingConfig(config: unknown): Record<string, unknown> | null {
+  if (!config || typeof config !== "object") {
+    return null;
+  }
+
+  const { apiKey, ...rest } = config as Record<string, unknown>;
+  return {
+    ...rest,
+    apiKey: apiKey ? "***redacted***" : undefined,
+  };
+}
+
 async function loadAIRenameConfig() {
   try {
     const stored = (await figma.clientStorage.getAsync(
@@ -173,6 +223,11 @@ async function loadAIRenameConfig() {
     postMessageToUI({
       type: "ai-rename-config-loaded",
       config: aiRenameConfig,
+    });
+    postAIRenameDebug({
+      phase: "config",
+      message: "Loaded AI rename config from storage.",
+      data: getAIRenameConfigSnapshot(),
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
@@ -190,6 +245,11 @@ async function loadAIRenameConfig() {
       type: "ai-rename-config-loaded",
       config: null,
     });
+    postAIRenameDebug({
+      phase: "config",
+      message: "Failed to load AI rename config from storage.",
+      data: { error: errorMessage },
+    });
   }
 }
 
@@ -206,6 +266,13 @@ async function persistAIRenameConfig(
       }
       aiRenameConfig = config;
       enforceAIRenameHistoryLimit();
+      postAIRenameDebug({
+        phase: "config",
+        message: config
+          ? "Persisted AI rename config to storage."
+          : "Cleared AI rename config from storage.",
+        data: getAIRenameConfigSnapshot(),
+      });
       return true;
     } catch (error) {
       const isLastAttempt = attempt === retries;
@@ -223,6 +290,15 @@ async function persistAIRenameConfig(
         // Update in-memory config even if storage fails
         aiRenameConfig = config;
         enforceAIRenameHistoryLimit();
+        postAIRenameDebug({
+          phase: "config",
+          message:
+            "Storage unavailable while persisting AI rename config. Using in-memory config only.",
+          data: {
+            error: errorMessage,
+            snapshot: getAIRenameConfigSnapshot(),
+          },
+        });
         return false;
       }
 
@@ -233,6 +309,14 @@ async function persistAIRenameConfig(
         );
         // Update in-memory config even if storage fails
         aiRenameConfig = config;
+        postAIRenameDebug({
+          phase: "config",
+          message: "Failed to persist AI rename config after retries.",
+          data: {
+            error: errorMessage,
+            snapshot: getAIRenameConfigSnapshot(),
+          },
+        });
         return false;
       }
 
@@ -263,6 +347,14 @@ figma.ui.onmessage = async (msg) => {
       settings: currentSettings,
     });
   } else if (msg.type === "store-ai-rename-config") {
+    postAIRenameDebug({
+      phase: "config",
+      message: "UI requested AI rename config persist.",
+      data: {
+        incoming: sanitizeIncomingConfig(msg.config ?? null),
+        previous: getAIRenameConfigSnapshot(),
+      },
+    });
     await persistAIRenameConfig(msg.config ?? null);
     postMessageToUI({
       type: "ai-rename-config-loaded",
@@ -295,6 +387,15 @@ figma.ui.onmessage = async (msg) => {
     void undoLastAIRename();
   } else if (msg.type === "redo-ai-rename") {
     void redoLastAIRename();
+  } else if (msg.type === "ai-rename-ui-debug") {
+    postAIRenameDebug({
+      phase: msg.phase ?? "config",
+      message: "AI rename UI debug payload",
+      chunkIndex: typeof msg.chunkIndex === "number" ? msg.chunkIndex : undefined,
+      data: {
+        payload: sanitizeIncomingConfig(msg.data ?? null),
+      },
+    });
   } else if (msg.type === "select-layer") {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "id" in node) {
@@ -455,6 +556,11 @@ figma.ui.onmessage = async (msg) => {
 
 async function handleAIRenameSelection() {
   if (aiRenameInProgress) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "AI rename requested while a workflow is already running.",
+      data: { stage: "selection" },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "AI rename is already running.",
@@ -464,6 +570,11 @@ async function handleAIRenameSelection() {
 
   const selection = figma.currentPage.selection;
   if (selection.length !== 1) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "AI rename requires exactly one selected node.",
+      data: { selectionCount: selection.length },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "Select a single frame, component, or instance to rename.",
@@ -473,6 +584,11 @@ async function handleAIRenameSelection() {
 
   const root = selection[0];
   if (!isAIRenameEligible(root)) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "Selected node is not eligible for AI rename.",
+      data: { nodeType: root.type },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "AI rename supports frames, components, or instances only.",
@@ -481,6 +597,11 @@ async function handleAIRenameSelection() {
   }
 
   if (!aiRenameConfig || !aiRenameConfig.backendUrl) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "AI rename backend is not configured.",
+      data: { config: getAIRenameConfigSnapshot() },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "Configure an AI rename backend before running the workflow.",
@@ -495,6 +616,14 @@ async function handleAIRenameSelection() {
   );
 
   if (!filteredLayers.length) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "No eligible layers found after applying exclusion patterns.",
+      data: {
+        totalCollected: layers.length,
+        excludePatterns: aiRenameConfig?.excludePatterns ?? [],
+      },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "No unlocked or visible layers found to rename.",
@@ -505,12 +634,34 @@ async function handleAIRenameSelection() {
   const batchSize = getAIRenameBatchSize();
   const chunks = chunkLayersByType(filteredLayers, batchSize);
   if (!chunks.length) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "Failed to chunk layers for AI rename.",
+      data: {
+        totalLayers: filteredLayers.length,
+        batchSize,
+      },
+    });
     postMessageToUI({
       type: "ai-rename-error",
       message: "Unable to prepare AI rename chunks.",
     });
     return;
   }
+
+  postAIRenameDebug({
+    phase: "selection",
+    message: `Prepared ${chunks.length} AI rename chunk${
+      chunks.length === 1 ? "" : "s"
+    }.`,
+    totalChunks: chunks.length,
+    data: {
+      totalLayers: filteredLayers.length,
+      batchSize,
+      frameName: root.name,
+      config: getAIRenameConfigSnapshot(),
+    },
+  });
 
   aiRenameInProgress = true;
   aiRenameAbortRequested = false;
@@ -538,6 +689,18 @@ async function handleAIRenameSelection() {
       totalChunks: chunks.length,
     };
 
+    postAIRenameDebug({
+      phase: "chunk-request",
+      message: "Requesting AI rename suggestions for chunk.",
+      chunkIndex: index,
+      totalChunks: chunks.length,
+      data: {
+        layerCount: chunk.layers.length,
+        chunkType: chunk.type,
+        estimatedSize: chunk.estimatedSize,
+      },
+    });
+
     const chunkPromise = new Promise<void>((resolve, reject) => {
       aiRenameChunkResolvers.set(index, { resolve, reject });
     });
@@ -551,6 +714,16 @@ async function handleAIRenameSelection() {
     try {
       await chunkPromise;
     } catch (error) {
+      postAIRenameDebug({
+        phase: "error",
+        message: "AI rename chunk failed before completion.",
+        chunkIndex: index,
+        totalChunks: chunks.length,
+        data: {
+          error:
+            error instanceof Error ? error.message : String(error ?? "unknown"),
+        },
+      });
       if (!aiRenameAbortRequested && !aiRenameWasCancelled) {
         postMessageToUI({
           type: "ai-rename-error",
@@ -572,6 +745,11 @@ async function handleAIRenameSelection() {
   cleanupAIRenameState();
 
   if (wasCancelled) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "AI rename workflow was cancelled before completion.",
+      data: summary,
+    });
     return;
   }
 
@@ -579,6 +757,11 @@ async function handleAIRenameSelection() {
     type: "ai-rename-complete",
     totalRenamed: summary.totalRenamed,
     totalFailed: summary.totalFailed,
+  });
+  postAIRenameDebug({
+    phase: "chunk-complete",
+    message: "AI rename workflow completed.",
+    data: summary,
   });
 }
 
@@ -655,9 +838,27 @@ async function handleApplyAIRenameBatch(
       renamedCount: renamed,
       failedCount: failed,
     });
+    postAIRenameDebug({
+      phase: "apply",
+      message: "Applied AI rename chunk in Figma.",
+      chunkIndex,
+      data: {
+        requested: renamedLayers.length,
+        renamed,
+        failed,
+      },
+    });
 
     resolver.resolve();
   } catch (error) {
+    postAIRenameDebug({
+      phase: "error",
+      message: "Failed to apply AI rename chunk to Figma layers.",
+      chunkIndex,
+      data: {
+        error: error instanceof Error ? error.message : String(error ?? "unknown"),
+      },
+    });
     resolver.reject(
       error instanceof Error
         ? error
@@ -677,6 +878,12 @@ function handleAIRenameChunkError(chunkIndex: number, message?: string) {
     aiRenameChunkResolvers.delete(chunkIndex);
   }
 
+  postAIRenameDebug({
+    phase: "error",
+    message: message ?? "AI rename chunk failed.",
+    chunkIndex,
+  });
+
   postMessageToUI({
     type: "ai-rename-error",
     message: message ?? "AI rename chunk failed.",
@@ -694,6 +901,11 @@ function cancelAIRenameWorkflow(reason: string) {
     reject(new Error(reason));
   });
   aiRenameChunkResolvers.clear();
+  postAIRenameDebug({
+    phase: "error",
+    message: "AI rename workflow cancelled.",
+    data: { reason },
+  });
   postMessageToUI({
     type: "ai-rename-error",
     message: reason,
@@ -839,6 +1051,16 @@ function postAIRenameHistoryStatus() {
     historyDepth: aiRenameHistory.length,
     redoDepth: aiRenameRedoStack.length,
   });
+  postAIRenameDebug({
+    phase: "history",
+    message: "AI rename history state updated.",
+    data: {
+      canUndo: aiRenameHistory.length > 0,
+      canRedo: aiRenameRedoStack.length > 0,
+      historyDepth: aiRenameHistory.length,
+      redoDepth: aiRenameRedoStack.length,
+    },
+  });
 }
 
 async function undoLastAIRename() {
@@ -895,6 +1117,11 @@ async function undoLastAIRename() {
         ? "Some layers could not be reverted. They may have been deleted or renamed manually."
         : undefined,
   });
+  postAIRenameDebug({
+    phase: "history",
+    message: "Executed undo for AI rename batch.",
+    data: { restored: renamed, failed },
+  });
 }
 
 async function redoLastAIRename() {
@@ -944,6 +1171,11 @@ async function redoLastAIRename() {
       failed > 0
         ? "Some layers could not be renamed. They may have been deleted or renamed manually."
         : undefined,
+  });
+  postAIRenameDebug({
+    phase: "history",
+    message: "Executed redo for AI rename batch.",
+    data: { applied: renamed, failed },
   });
 }
 

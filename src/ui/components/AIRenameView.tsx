@@ -7,6 +7,7 @@ import {
   NamingTemplate,
   LayerNamingRule,
   NamingConventionOption,
+  AIRenameDebugEvent,
 } from "../types";
 
 const MODEL_OPTIONS = [
@@ -110,6 +111,7 @@ interface AIRenameViewProps {
   isRenaming: boolean;
   renameCounts: { renamed: number; failed: number };
   progress: { current: number; total: number };
+  debugEvents: AIRenameDebugEvent[];
 }
 
 export default function AIRenameView({
@@ -126,6 +128,7 @@ export default function AIRenameView({
   isRenaming,
   renameCounts,
   progress,
+  debugEvents,
 }: AIRenameViewProps) {
   const [draftConfig, setDraftConfig] = useState<AIRenameConfig>(() =>
     cloneConfig(config)
@@ -491,6 +494,16 @@ export default function AIRenameView({
       activeChunk.originalLayers.map((layer) => [layer.id, layer])
     );
   }, [activeChunk]);
+  const sortedDebugEvents = useMemo(
+    () => [...debugEvents].sort((a, b) => a.timestamp - b.timestamp),
+    [debugEvents]
+  );
+  const savedConventionLabel = formatNamingConvention(
+    config.namingConvention
+  );
+  const draftConventionLabel = formatNamingConvention(
+    draftConfig.namingConvention
+  );
 
   return (
     <div className="ai-rename-view">
@@ -525,6 +538,21 @@ export default function AIRenameView({
           <span>
             {renameCounts.renamed} / {renameCounts.failed}
           </span>
+        </div>
+        <div className="ai-rename-status-card">
+          <span className="ai-rename-status-label">Saved convention</span>
+          <span>{savedConventionLabel}</span>
+        </div>
+        <div className="ai-rename-status-card">
+          <span className="ai-rename-status-label">Draft convention</span>
+          <span>
+            {draftConventionLabel}
+            {isDirty ? " (pending save)" : ""}
+          </span>
+        </div>
+        <div className="ai-rename-status-card">
+          <span className="ai-rename-status-label">Review mode</span>
+          <span>{config.reviewMode ? "On" : "Off"}</span>
         </div>
       </div>
 
@@ -785,6 +813,11 @@ export default function AIRenameView({
             Save AI rename settings
           </button>
         </div>
+        {isDirty && (
+          <div className="ai-rename-warning" style={{ marginTop: "12px" }}>
+            Unsaved changes are not yet active. Save before running AI Rename.
+          </div>
+        )}
       </section>
 
       <section className="ai-rename-section">
@@ -936,6 +969,47 @@ export default function AIRenameView({
         </div>
       </section>
 
+      <section className="ai-rename-section">
+        <div className="ai-rename-section-header">
+          <h3>Debug trace</h3>
+          <span className="ai-rename-pill">
+            {sortedDebugEvents.length} event{sortedDebugEvents.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        {sortedDebugEvents.length === 0 ? (
+          <p className="ai-rename-empty">
+            No AI rename events yet. Run AI Rename to capture live requests, responses, and configuration snapshots.
+          </p>
+        ) : (
+          <div className="ai-rename-debug-log">
+            {sortedDebugEvents
+              .slice()
+              .reverse()
+              .map((event) => (
+                <article
+                  className="ai-rename-debug-entry"
+                  key={`${event.timestamp}-${event.phase}-${event.chunkIndex ?? "n/a"}`}
+                >
+                  <header className="ai-rename-debug-header">
+                    <strong>{formatDebugTimestamp(event.timestamp)}</strong>
+                    <span className="ai-rename-pill">{event.phase}</span>
+                    {typeof event.chunkIndex === "number" && (
+                      <span className="ai-rename-debug-meta">
+                        Chunk {event.chunkIndex + 1}
+                        {event.totalChunks ? ` / ${event.totalChunks}` : ""}
+                      </span>
+                    )}
+                  </header>
+                  <p>{event.message}</p>
+                  {event.data && Object.keys(event.data).length > 0 && (
+                    <pre>{JSON.stringify(event.data, null, 2)}</pre>
+                  )}
+                </article>
+              ))}
+          </div>
+        )}
+      </section>
+
       <datalist id="layer-type-suggestions">
         {LAYER_TYPE_SUGGESTIONS.map((type) => (
           <option key={type} value={type} />
@@ -943,6 +1017,39 @@ export default function AIRenameView({
       </datalist>
     </div>
   );
+}
+
+function formatNamingConvention(value?: string | null) {
+  switch (value) {
+    case "bem":
+      return "BEM";
+    case "pascal-case":
+      return "PascalCase";
+    case "camel-case":
+      return "camelCase";
+    case "kebab-case":
+      return "kebab-case";
+    case "snake-case":
+      return "snake_case";
+    case "custom":
+      return "Custom template";
+    case "semantic":
+    default:
+      return "Semantic";
+  }
+}
+
+function formatDebugTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Unknown time";
+  }
+
+  return date.toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function toChunkKey(chunkIndex: number): string {
