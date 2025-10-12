@@ -31,14 +31,12 @@ export class AIRenameService {
     context: AIRenameContext,
     configOverrides?: Partial<AIRenameConfig>
   ): Promise<RenamedLayer[]> {
+    const payloadConfig = this.buildConfigPayload(configOverrides);
     const backendResponse = await this.callBackend(
       {
         layers,
         context,
-        config: {
-          model: configOverrides?.model || DEFAULT_MODEL,
-          temperature: configOverrides?.temperature ?? DEFAULT_TEMPERATURE,
-        },
+        config: payloadConfig,
       },
       configOverrides?.apiKey
     );
@@ -58,6 +56,24 @@ export class AIRenameService {
       newName: layer.newName,
       oldName: originalNames.get(layer.id) ?? "",
     }));
+  }
+
+  private buildConfigPayload(
+    configOverrides?: Partial<AIRenameConfig>
+  ): Record<string, unknown> {
+    const model = configOverrides?.model || DEFAULT_MODEL;
+    return {
+      model,
+      temperature: configOverrides?.temperature ?? DEFAULT_TEMPERATURE,
+      namingConvention: configOverrides?.namingConvention,
+      customNamingPattern: configOverrides?.customNamingPattern,
+      namingTemplates: configOverrides?.namingTemplates,
+      layerTypeRules: configOverrides?.layerTypeRules,
+      excludePatterns: configOverrides?.excludePatterns,
+      reviewMode: configOverrides?.reviewMode,
+      undoHistoryLimit: configOverrides?.undoHistoryLimit,
+      batchSize: configOverrides?.batchSize,
+    };
   }
 
   private async callBackend(

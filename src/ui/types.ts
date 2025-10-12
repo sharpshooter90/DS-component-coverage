@@ -53,11 +53,43 @@ export interface AnalysisSettings {
   ignoredTypes: string[];
 }
 
+export type NamingConventionOption =
+  | "semantic"
+  | "bem"
+  | "pascal-case"
+  | "camel-case"
+  | "kebab-case"
+  | "snake-case"
+  | "custom";
+
+export interface NamingTemplate {
+  id: string;
+  label: string;
+  pattern: string;
+  description?: string;
+  isDefault?: boolean;
+}
+
+export interface LayerNamingRule {
+  layerType: string;
+  pattern: string;
+  enabled: boolean;
+  example?: string;
+}
+
 export interface AIRenameConfig {
   apiKey?: string;
   backendUrl: string;
   model?: string;
   temperature?: number;
+  namingConvention?: NamingConventionOption;
+  customNamingPattern?: string;
+  namingTemplates?: NamingTemplate[];
+  layerTypeRules?: LayerNamingRule[];
+  excludePatterns?: string[];
+  reviewMode?: boolean;
+  undoHistoryLimit?: number;
+  batchSize?: number;
 }
 
 export interface LayerDataForAI {
@@ -154,7 +186,30 @@ export type PluginMessage =
     }
   | { type: "ai-rename-complete"; totalRenamed: number; totalFailed: number }
   | { type: "ai-rename-error"; message: string }
-  | { type: "ai-rename-config-loaded"; config: AIRenameConfig | null };
+  | { type: "ai-rename-config-loaded"; config: AIRenameConfig | null }
+  | { type: "undo-ai-rename" }
+  | { type: "redo-ai-rename" }
+  | {
+      type: "ai-rename-history-updated";
+      canUndo: boolean;
+      canRedo: boolean;
+      historyDepth: number;
+      redoDepth: number;
+    }
+  | {
+      type: "ai-rename-undo-result";
+      success: boolean;
+      restored: number;
+      failed: number;
+      message?: string;
+    }
+  | {
+      type: "ai-rename-redo-result";
+      success: boolean;
+      applied: number;
+      failed: number;
+      message?: string;
+    };
 
 export interface RGB {
   r: number;

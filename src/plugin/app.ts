@@ -84,6 +84,25 @@ interface AIRenameConfig {
   backendUrl: string;
   model?: string;
   temperature?: number;
+  namingConvention?: string;
+  customNamingPattern?: string;
+  namingTemplates?: Array<{
+    id: string;
+    label: string;
+    pattern: string;
+    description?: string;
+    isDefault?: boolean;
+  }>;
+  layerTypeRules?: Array<{
+    layerType: string;
+    pattern: string;
+    enabled: boolean;
+    example?: string;
+  }>;
+  excludePatterns?: string[];
+  reviewMode?: boolean;
+  undoHistoryLimit?: number;
+  batchSize?: number;
 }
 
 interface AIRenameContext {
@@ -103,6 +122,12 @@ interface AIRenameStats {
   totalChunks: number;
   totalRenamed: number;
   totalFailed: number;
+}
+
+interface RenameHistoryEntry {
+  chunkIndex: number;
+  layers: RenamedLayer[];
+  timestamp: number;
 }
 
 // Default settings
@@ -130,11 +155,14 @@ let aiRenameStats: AIRenameStats = {
   totalRenamed: 0,
   totalFailed: 0,
 };
-const AI_RENAME_MAX_CHUNK_SIZE = 50;
+let aiRenameHistory: RenameHistoryEntry[] = [];
+let aiRenameRedoStack: RenameHistoryEntry[] = [];
+const DEFAULT_AI_RENAME_BATCH_SIZE = 50;
 const AI_RENAME_ELIGIBLE_TYPES = new Set(["FRAME", "COMPONENT", "INSTANCE"]);
 
 figma.showUI(__html__, { width: 480, height: 720 });
 void loadAIRenameConfig();
+postAIRenameHistoryStatus();
 
 async function loadAIRenameConfig() {
   try {
@@ -177,6 +205,7 @@ async function persistAIRenameConfig(
         await figma.clientStorage.deleteAsync(AI_RENAME_CONFIG_KEY);
       }
       aiRenameConfig = config;
+      enforceAIRenameHistoryLimit();
       return true;
     } catch (error) {
       const isLastAttempt = attempt === retries;
@@ -193,6 +222,7 @@ async function persistAIRenameConfig(
         );
         // Update in-memory config even if storage fails
         aiRenameConfig = config;
+        enforceAIRenameHistoryLimit();
         return false;
       }
 
@@ -261,6 +291,10 @@ figma.ui.onmessage = async (msg) => {
     handleAIRenameChunkError(msg.chunkIndex, msg.message);
   } else if (msg.type === "cancel-ai-rename") {
     cancelAIRenameWorkflow("Cancelled by user");
+  } else if (msg.type === "undo-ai-rename") {
+    void undoLastAIRename();
+  } else if (msg.type === "redo-ai-rename") {
+    void redoLastAIRename();
   } else if (msg.type === "select-layer") {
     const node = await figma.getNodeByIdAsync(msg.layerId);
     if (node && "id" in node) {
@@ -455,7 +489,12 @@ async function handleAIRenameSelection() {
   }
 
   const layers = collectAIRenameLayers(root);
-  if (!layers.length) {
+  const filteredLayers = filterLayersWithExclusions(
+    layers,
+    aiRenameConfig?.excludePatterns
+  );
+
+  if (!filteredLayers.length) {
     postMessageToUI({
       type: "ai-rename-error",
       message: "No unlocked or visible layers found to rename.",
@@ -463,7 +502,8 @@ async function handleAIRenameSelection() {
     return;
   }
 
-  const chunks = chunkLayersByType(layers, AI_RENAME_MAX_CHUNK_SIZE);
+  const batchSize = getAIRenameBatchSize();
+  const chunks = chunkLayersByType(filteredLayers, batchSize);
   if (!chunks.length) {
     postMessageToUI({
       type: "ai-rename-error",
@@ -493,7 +533,7 @@ async function handleAIRenameSelection() {
     const chunk = chunks[index];
     const context: AIRenameContext = {
       frameName: root.name,
-      totalLayers: layers.length,
+      totalLayers: filteredLayers.length,
       chunkIndex: index,
       totalChunks: chunks.length,
     };
@@ -601,7 +641,10 @@ async function handleApplyAIRenameBatch(
   }
 
   try {
-    const { renamed, failed } = await applyLayerRenames(renamedLayers);
+    const { renamed, failed } = await applyLayerRenames(
+      renamedLayers,
+      chunkIndex
+    );
     aiRenameStats.totalRenamed += renamed;
     aiRenameStats.totalFailed += failed;
 
@@ -657,9 +700,14 @@ function cancelAIRenameWorkflow(reason: string) {
   });
 }
 
-async function applyLayerRenames(renamedLayers: RenamedLayer[]) {
+async function applyLayerRenames(
+  renamedLayers: RenamedLayer[],
+  chunkIndex: number,
+  recordHistory = true
+) {
   let renamed = 0;
   let failed = 0;
+  const applied: RenamedLayer[] = [];
 
   for (const layer of renamedLayers) {
     const node = await figma.getNodeByIdAsync(layer.id);
@@ -669,9 +717,16 @@ async function applyLayerRenames(renamedLayers: RenamedLayer[]) {
     }
 
     try {
-      if ((node as SceneNode).name !== layer.newName) {
-        (node as SceneNode).name = layer.newName;
+      const sceneNode = node as SceneNode;
+      const originalName = sceneNode.name;
+      if (originalName !== layer.newName) {
+        sceneNode.name = layer.newName;
         renamed++;
+        applied.push({
+          id: layer.id,
+          oldName: originalName,
+          newName: layer.newName,
+        });
       }
     } catch (error) {
       console.warn(`Failed to rename layer ${layer.id}`, error);
@@ -679,7 +734,69 @@ async function applyLayerRenames(renamedLayers: RenamedLayer[]) {
     }
   }
 
+  if (recordHistory) {
+    if (applied.length) {
+      aiRenameHistory.push({
+        chunkIndex,
+        layers: applied.map((entry) => ({ ...entry })),
+        timestamp: Date.now(),
+      });
+      aiRenameRedoStack = [];
+      enforceAIRenameHistoryLimit();
+    } else {
+      postAIRenameHistoryStatus();
+    }
+  } else {
+    postAIRenameHistoryStatus();
+  }
+
   return { renamed, failed };
+}
+
+function getAIRenameBatchSize(): number {
+  const configured = aiRenameConfig?.batchSize;
+  if (typeof configured !== "number" || Number.isNaN(configured)) {
+    return DEFAULT_AI_RENAME_BATCH_SIZE;
+  }
+
+  const normalized = Math.floor(configured);
+  if (!Number.isFinite(normalized)) {
+    return DEFAULT_AI_RENAME_BATCH_SIZE;
+  }
+
+  const lowerBound = 5;
+  const upperBound = 200;
+  return Math.min(Math.max(normalized, lowerBound), upperBound);
+}
+
+function filterLayersWithExclusions(
+  layers: LayerDataForAI[],
+  patterns?: string[]
+): LayerDataForAI[] {
+  if (!patterns || !patterns.length) {
+    return layers;
+  }
+
+  const regexes = patterns
+    .map((pattern) => pattern.trim())
+    .filter(Boolean)
+    .map((pattern) => {
+      try {
+        return new RegExp(pattern, "i");
+      } catch (error) {
+        console.warn(`Invalid exclude pattern "${pattern}"`, error);
+        return null;
+      }
+    })
+    .filter((regex): regex is RegExp => regex !== null);
+
+  if (!regexes.length) {
+    return layers;
+  }
+
+  return layers.filter(
+    (layer) => !regexes.some((regex) => regex.test(layer.name))
+  );
 }
 
 function cleanupAIRenameState() {
@@ -692,6 +809,142 @@ function cleanupAIRenameState() {
     totalRenamed: 0,
     totalFailed: 0,
   };
+}
+
+function enforceAIRenameHistoryLimit() {
+  const limit = aiRenameConfig?.undoHistoryLimit ?? 20;
+  if (limit <= 0) {
+    aiRenameHistory = [];
+    aiRenameRedoStack = [];
+    postAIRenameHistoryStatus();
+    return;
+  }
+
+  if (aiRenameHistory.length > limit) {
+    aiRenameHistory.splice(0, aiRenameHistory.length - limit);
+  }
+
+  if (aiRenameRedoStack.length > limit) {
+    aiRenameRedoStack.splice(0, aiRenameRedoStack.length - limit);
+  }
+
+  postAIRenameHistoryStatus();
+}
+
+function postAIRenameHistoryStatus() {
+  postMessageToUI({
+    type: "ai-rename-history-updated",
+    canUndo: aiRenameHistory.length > 0,
+    canRedo: aiRenameRedoStack.length > 0,
+    historyDepth: aiRenameHistory.length,
+    redoDepth: aiRenameRedoStack.length,
+  });
+}
+
+async function undoLastAIRename() {
+  if (aiRenameInProgress) {
+    postMessageToUI({
+      type: "ai-rename-undo-result",
+      success: false,
+      restored: 0,
+      failed: 0,
+      message: "Wait for the current AI rename run to finish before undoing.",
+    });
+    return;
+  }
+
+  const entry = aiRenameHistory.pop();
+  if (!entry) {
+    postMessageToUI({
+      type: "ai-rename-undo-result",
+      success: false,
+      restored: 0,
+      failed: 0,
+      message: "No rename history available.",
+    });
+    postAIRenameHistoryStatus();
+    return;
+  }
+
+  const reverseLayers = entry.layers.map((layer) => ({
+    id: layer.id,
+    oldName: layer.newName,
+    newName: layer.oldName,
+  }));
+
+  const { renamed, failed } = await applyLayerRenames(
+    reverseLayers,
+    entry.chunkIndex,
+    false
+  );
+
+  if (renamed > 0) {
+    aiRenameRedoStack.push(entry);
+  } else {
+    aiRenameHistory.push(entry);
+  }
+  enforceAIRenameHistoryLimit();
+
+  postMessageToUI({
+    type: "ai-rename-undo-result",
+    success: failed === 0,
+    restored: renamed,
+    failed,
+    message:
+      failed > 0
+        ? "Some layers could not be reverted. They may have been deleted or renamed manually."
+        : undefined,
+  });
+}
+
+async function redoLastAIRename() {
+  if (aiRenameInProgress) {
+    postMessageToUI({
+      type: "ai-rename-redo-result",
+      success: false,
+      applied: 0,
+      failed: 0,
+      message: "Wait for the current AI rename run to finish before redoing.",
+    });
+    return;
+  }
+
+  const entry = aiRenameRedoStack.pop();
+  if (!entry) {
+    postMessageToUI({
+      type: "ai-rename-redo-result",
+      success: false,
+      applied: 0,
+      failed: 0,
+      message: "Nothing to redo.",
+    });
+    postAIRenameHistoryStatus();
+    return;
+  }
+
+  const { renamed, failed } = await applyLayerRenames(
+    entry.layers,
+    entry.chunkIndex,
+    false
+  );
+
+  if (renamed > 0) {
+    aiRenameHistory.push(entry);
+  } else {
+    aiRenameRedoStack.push(entry);
+  }
+  enforceAIRenameHistoryLimit();
+
+  postMessageToUI({
+    type: "ai-rename-redo-result",
+    success: failed === 0,
+    applied: renamed,
+    failed,
+    message:
+      failed > 0
+        ? "Some layers could not be renamed. They may have been deleted or renamed manually."
+        : undefined,
+  });
 }
 
 function notifySelectionChange(nodeId: string | null) {

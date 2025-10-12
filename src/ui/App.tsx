@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import SummaryView from "./components/SummaryView";
@@ -16,6 +16,8 @@ import {
   AIRenameContext,
   LayerDataForAI,
   RenamedLayer,
+  NamingTemplate,
+  LayerNamingRule,
 } from "./types";
 import { AIRenameService } from "./utils/aiRenameService";
 
@@ -24,6 +26,33 @@ type ViewType = "summary" | "detailed" | "settings" | "ai-rename";
 // For local testing, use http://localhost:3001
 // For production, replace with your Vercel deployment URL
 const DEFAULT_BACKEND_URL = "http://localhost:3001";
+const DEFAULT_AI_RENAME_CONFIG: AIRenameConfig = {
+  backendUrl: DEFAULT_BACKEND_URL,
+  model: "gemini-2.5-flash",
+  temperature: 0.7,
+  namingConvention: "semantic",
+  namingTemplates: [],
+  layerTypeRules: [],
+  excludePatterns: [],
+  reviewMode: false,
+  batchSize: 50,
+  undoHistoryLimit: 20,
+};
+
+const GEMINI_MODEL_OPTIONS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-pro",
+] as const;
+
+const NAMING_CONVENTIONS = [
+  "semantic",
+  "bem",
+  "pascal-case",
+  "camel-case",
+  "kebab-case",
+  "snake-case",
+  "custom",
+] as const;
 
 interface CoverageAnalysis {
   summary: {
@@ -67,6 +96,227 @@ interface Settings {
   ignoredTypes: string[];
 }
 
+interface PendingRenameChunk {
+  chunkIndex: number;
+  context: AIRenameContext;
+  renamedLayers: RenamedLayer[];
+  originalLayers: LayerDataForAI[];
+}
+
+function normalizeAIRenameConfig(
+  base: AIRenameConfig | null,
+  incoming?: Partial<AIRenameConfig>
+): AIRenameConfig {
+  const source = incoming ?? {};
+  const backendUrlCandidate =
+    source.backendUrl ?? base?.backendUrl ?? DEFAULT_AI_RENAME_CONFIG.backendUrl;
+  const backendUrl =
+    typeof backendUrlCandidate === "string" && backendUrlCandidate.trim().length
+      ? backendUrlCandidate.trim()
+      : DEFAULT_AI_RENAME_CONFIG.backendUrl;
+
+  const apiKeySource =
+    source.apiKey !== undefined ? source.apiKey : base?.apiKey;
+  const apiKey =
+    typeof apiKeySource === "string" && apiKeySource.trim().length
+      ? apiKeySource.trim()
+      : undefined;
+
+  const model = normalizeModel(
+    source.model ?? base?.model ?? DEFAULT_AI_RENAME_CONFIG.model
+  );
+
+  const temperature = normalizeTemperature(
+    source.temperature ?? base?.temperature ?? DEFAULT_AI_RENAME_CONFIG.temperature
+  );
+
+  const namingConvention = normalizeNamingConvention(
+    source.namingConvention ??
+      base?.namingConvention ??
+      DEFAULT_AI_RENAME_CONFIG.namingConvention
+  );
+
+  const customNamingPatternSource =
+    source.customNamingPattern !== undefined
+      ? source.customNamingPattern
+      : base?.customNamingPattern;
+  const customNamingPattern =
+    typeof customNamingPatternSource === "string" &&
+    customNamingPatternSource.trim().length
+      ? customNamingPatternSource.trim()
+      : undefined;
+
+  const namingTemplates = sanitizeNamingTemplates(
+    source.namingTemplates ??
+      base?.namingTemplates ??
+      DEFAULT_AI_RENAME_CONFIG.namingTemplates
+  );
+
+  const layerTypeRules = sanitizeLayerNamingRules(
+    source.layerTypeRules ??
+      base?.layerTypeRules ??
+      DEFAULT_AI_RENAME_CONFIG.layerTypeRules
+  );
+
+  const excludePatterns = sanitizeExcludePatterns(
+    source.excludePatterns ??
+      base?.excludePatterns ??
+      DEFAULT_AI_RENAME_CONFIG.excludePatterns
+  );
+
+  const reviewMode =
+    source.reviewMode ?? base?.reviewMode ?? DEFAULT_AI_RENAME_CONFIG.reviewMode;
+
+  const batchSize = normalizeBatchSize(
+    source.batchSize ?? base?.batchSize ?? DEFAULT_AI_RENAME_CONFIG.batchSize
+  );
+
+  const undoHistoryLimit = normalizeUndoHistoryLimit(
+    source.undoHistoryLimit ??
+      base?.undoHistoryLimit ??
+      DEFAULT_AI_RENAME_CONFIG.undoHistoryLimit
+  );
+
+  return {
+    backendUrl,
+    apiKey,
+    model,
+    temperature,
+    namingConvention,
+    customNamingPattern,
+    namingTemplates,
+    layerTypeRules,
+    excludePatterns,
+    reviewMode,
+    batchSize,
+    undoHistoryLimit,
+  };
+}
+
+function sanitizeNamingTemplates(
+  templates: NamingTemplate[] | undefined
+): NamingTemplate[] {
+  if (!templates || !templates.length) {
+    return [];
+  }
+
+  return templates
+    .map((template, index) => {
+      const pattern = template.pattern?.trim() ?? "";
+      if (!pattern) {
+        return null;
+      }
+
+      const label = template.label?.trim() ?? "";
+      return {
+        id: template.id?.trim() || `template-${index}`,
+        label: label || `Template ${index + 1}`,
+        pattern,
+        description: template.description?.trim() || undefined,
+        isDefault: template.isDefault ?? false,
+      };
+    })
+    .filter((template): template is NamingTemplate => template !== null);
+}
+
+function sanitizeLayerNamingRules(
+  rules: LayerNamingRule[] | undefined
+): LayerNamingRule[] {
+  if (!rules || !rules.length) {
+    return [];
+  }
+
+  return rules
+    .map((rule) => {
+      const layerType = rule.layerType?.trim();
+      const pattern = rule.pattern?.trim() ?? "";
+      if (!layerType || !pattern) {
+        return null;
+      }
+
+      return {
+        layerType,
+        pattern,
+        enabled: rule.enabled !== false,
+        example: rule.example?.trim() || undefined,
+      };
+    })
+    .filter((rule): rule is LayerNamingRule => rule !== null);
+}
+
+function sanitizeExcludePatterns(patterns: string[] | undefined): string[] {
+  if (!patterns || !patterns.length) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  const sanitized: string[] = [];
+
+  patterns.forEach((pattern) => {
+    const trimmed = pattern.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      return;
+    }
+    seen.add(trimmed);
+    sanitized.push(trimmed);
+  });
+
+  return sanitized;
+}
+
+function normalizeBatchSize(value: number | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_AI_RENAME_CONFIG.batchSize ?? 50;
+  }
+
+  const normalized = Math.floor(value);
+  const min = 5;
+  const max = 200;
+  return Math.min(Math.max(normalized, min), max);
+}
+
+function normalizeUndoHistoryLimit(value: number | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_AI_RENAME_CONFIG.undoHistoryLimit ?? 20;
+  }
+
+  const normalized = Math.floor(value);
+  const min = 0;
+  const max = 200;
+  return Math.min(Math.max(normalized, min), max);
+}
+
+function normalizeTemperature(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return DEFAULT_AI_RENAME_CONFIG.temperature;
+  }
+
+  const clamped = Math.min(Math.max(value, 0), 1);
+  return Number.isFinite(clamped)
+    ? parseFloat(clamped.toFixed(2))
+    : DEFAULT_AI_RENAME_CONFIG.temperature;
+}
+
+function normalizeNamingConvention(value: string | undefined): string {
+  if (!value) {
+    return DEFAULT_AI_RENAME_CONFIG.namingConvention ?? "semantic";
+  }
+
+  const match = NAMING_CONVENTIONS.find(
+    (convention) => convention === value
+  );
+  return match ?? (DEFAULT_AI_RENAME_CONFIG.namingConvention ?? "semantic");
+}
+
+function normalizeModel(value: string | undefined): string | undefined {
+  if (!value) {
+    return DEFAULT_AI_RENAME_CONFIG.model;
+  }
+
+  const match = GEMINI_MODEL_OPTIONS.find((model) => model === value);
+  return match ?? DEFAULT_AI_RENAME_CONFIG.model;
+}
+
 function App() {
   const [view, setView] = useState<ViewType>("summary");
   const [analysis, setAnalysis] = useState<CoverageAnalysis | null>(null);
@@ -101,8 +351,40 @@ function App() {
     failed: 0,
   });
   const [pendingAIRename, setPendingAIRename] = useState(false);
+  const [renameReviewQueue, setRenameReviewQueue] = useState<
+    PendingRenameChunk[]
+  >([]);
+  const [aiRenameHistoryState, setAIRenameHistoryState] = useState({
+    canUndo: false,
+    canRedo: false,
+    historyDepth: 0,
+    redoDepth: 0,
+  });
 
   const aiRenameServiceRef = useRef<AIRenameService | null>(null);
+
+  const persistAIRenameConfigToPlugin = (config: AIRenameConfig) => {
+    setAIRenameConfig(config);
+    window.parent.postMessage(
+      { pluginMessage: { type: "store-ai-rename-config", config } },
+      "*"
+    );
+  };
+
+  const updateAIRenameConfig = (partial: Partial<AIRenameConfig>) => {
+    const normalized = normalizeAIRenameConfig(aiRenameConfig, partial);
+    persistAIRenameConfigToPlugin(normalized);
+  };
+
+  const effectiveAIRenameConfig = useMemo(() => {
+    const source = aiRenameConfig ?? DEFAULT_AI_RENAME_CONFIG;
+    return {
+      ...source,
+      namingTemplates: [...(source.namingTemplates ?? [])],
+      layerTypeRules: [...(source.layerTypeRules ?? [])],
+      excludePatterns: [...(source.excludePatterns ?? [])],
+    };
+  }, [aiRenameConfig]);
 
   useEffect(() => {
     window.parent.postMessage({ pluginMessage: { type: "get-settings" } }, "*");
@@ -150,12 +432,17 @@ function App() {
           );
         }
       } else if (msg.type === "ai-rename-config-loaded") {
-        setAIRenameConfig(msg.config ?? null);
+        if (msg.config) {
+          setAIRenameConfig(normalizeAIRenameConfig(null, msg.config));
+        } else {
+          setAIRenameConfig(null);
+        }
       } else if (msg.type === "ai-rename-started") {
         setIsAIRenaming(true);
         setAIRenameProgress({ current: 0, total: msg.totalChunks });
         setAIStatusMessage("Preparing layers…");
         setAIRenameCounts({ renamed: 0, failed: 0 });
+        setRenameReviewQueue([]);
       } else if (msg.type === "ai-rename-chunk-request") {
         setAIRenameProgress({
           current: msg.context.chunkIndex + 1,
@@ -169,6 +456,11 @@ function App() {
           failed: previous.failed + (msg.failedCount ?? 0),
         }));
         setAIStatusMessage("Applied rename suggestions in Figma");
+        if (typeof msg.chunkIndex === "number") {
+          setRenameReviewQueue((previous) =>
+            previous.filter((item) => item.chunkIndex !== msg.chunkIndex)
+          );
+        }
       } else if (msg.type === "ai-rename-complete") {
         setIsAIRenaming(false);
         setAIStatusMessage("AI rename complete");
@@ -180,10 +472,39 @@ function App() {
           current: previous.total,
           total: previous.total,
         }));
+        setRenameReviewQueue([]);
       } else if (msg.type === "ai-rename-error") {
         setError(msg.message);
         setIsAIRenaming(false);
         setAIStatusMessage(null);
+        setRenameReviewQueue([]);
+      } else if (msg.type === "ai-rename-history-updated") {
+        setAIRenameHistoryState({
+          canUndo: msg.canUndo,
+          canRedo: msg.canRedo,
+          historyDepth: msg.historyDepth,
+          redoDepth: msg.redoDepth,
+        });
+      } else if (msg.type === "ai-rename-undo-result") {
+        if (msg.success) {
+          setAIStatusMessage(
+            `Reverted ${msg.restored ?? 0} layer name${
+              (msg.restored ?? 0) === 1 ? "" : "s"
+            }`
+          );
+        } else {
+          setError(msg.message ?? "Failed to undo AI rename.");
+        }
+      } else if (msg.type === "ai-rename-redo-result") {
+        if (msg.success) {
+          setAIStatusMessage(
+            `Reapplied ${msg.applied ?? 0} layer name${
+              (msg.applied ?? 0) === 1 ? "" : "s"
+            }`
+          );
+        } else {
+          setError(msg.message ?? "Failed to redo AI rename.");
+        }
       }
     };
 
@@ -292,7 +613,54 @@ function App() {
         apiKey: aiRenameConfig?.apiKey,
         model: aiRenameConfig?.model,
         temperature: aiRenameConfig?.temperature,
+        namingConvention: aiRenameConfig?.namingConvention,
+        customNamingPattern: aiRenameConfig?.customNamingPattern,
+        namingTemplates: aiRenameConfig?.namingTemplates,
+        layerTypeRules: aiRenameConfig?.layerTypeRules,
+        excludePatterns: aiRenameConfig?.excludePatterns,
+        reviewMode: aiRenameConfig?.reviewMode,
+        undoHistoryLimit: aiRenameConfig?.undoHistoryLimit,
+        batchSize: aiRenameConfig?.batchSize,
       });
+
+      if (aiRenameConfig?.reviewMode) {
+        if (renamedLayers.length === 0) {
+          setAIStatusMessage("No rename suggestions for this chunk.");
+          window.parent.postMessage(
+            {
+              pluginMessage: {
+                type: "apply-ai-rename-batch",
+                renamedLayers: [],
+                chunkIndex: context.chunkIndex,
+              },
+            },
+            "*"
+          );
+          return;
+        }
+
+        setRenameReviewQueue((previous) => {
+          const withoutCurrent = previous.filter(
+            (item) => item.chunkIndex !== context.chunkIndex
+          );
+          return [
+            ...withoutCurrent,
+            {
+              chunkIndex: context.chunkIndex,
+              context,
+              renamedLayers,
+              originalLayers: chunk,
+            },
+          ];
+        });
+        setAIStatusMessage(
+          `Review ${renamedLayers.length} rename suggestion${
+            renamedLayers.length === 1 ? "" : "s"
+          }`
+        );
+        setView("ai-rename");
+        return;
+      }
 
       setAIStatusMessage(
         renamedLayers.length === 0
@@ -330,19 +698,53 @@ function App() {
     }
   };
 
-  const handleSaveAIRenameConfig = (config: AIRenameConfig) => {
-    const normalized: AIRenameConfig = {
-      backendUrl: config.backendUrl || DEFAULT_BACKEND_URL,
-      apiKey: config.apiKey,
-      model: config.model,
-      temperature: config.temperature,
-    };
-
-    setAIRenameConfig(normalized);
+  const handleApproveRenameChunk = (
+    chunkIndex: number,
+    approvedLayers: RenamedLayer[]
+  ) => {
+    setRenameReviewQueue((previous) =>
+      previous.filter((item) => item.chunkIndex !== chunkIndex)
+    );
+    setAIStatusMessage(
+      approvedLayers.length
+        ? `Sending ${approvedLayers.length} rename suggestion${
+            approvedLayers.length === 1 ? "" : "s"
+          } to Figma…`
+        : "Skipping rename suggestions for this chunk."
+    );
     window.parent.postMessage(
-      { pluginMessage: { type: "store-ai-rename-config", config: normalized } },
+      {
+        pluginMessage: {
+          type: "apply-ai-rename-batch",
+          renamedLayers: approvedLayers,
+          chunkIndex,
+        },
+      },
       "*"
     );
+  };
+
+  const handleRejectRenameChunk = (chunkIndex: number) => {
+    handleApproveRenameChunk(chunkIndex, []);
+  };
+
+  const handleUndoAIRenameHistory = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "undo-ai-rename" } },
+      "*"
+    );
+  };
+
+  const handleRedoAIRenameHistory = () => {
+    window.parent.postMessage(
+      { pluginMessage: { type: "redo-ai-rename" } },
+      "*"
+    );
+  };
+
+  const handleSaveAIRenameConfig = (config: AIRenameConfig) => {
+    const normalized = normalizeAIRenameConfig(aiRenameConfig, config);
+    persistAIRenameConfigToPlugin(normalized);
     setShowApiKeyModal(false);
 
     if (pendingAIRename) {
@@ -352,17 +754,10 @@ function App() {
   };
 
   const handleSkipAIRenameConfig = () => {
-    const fallback =
-      aiRenameConfig ||
-      ({
-        backendUrl: DEFAULT_BACKEND_URL,
-      } as AIRenameConfig);
-
-    setAIRenameConfig(fallback);
-    window.parent.postMessage(
-      { pluginMessage: { type: "store-ai-rename-config", config: fallback } },
-      "*"
-    );
+    const fallback = normalizeAIRenameConfig(aiRenameConfig, {
+      backendUrl: aiRenameConfig?.backendUrl ?? DEFAULT_BACKEND_URL,
+    });
+    persistAIRenameConfigToPlugin(fallback);
     setShowApiKeyModal(false);
 
     if (pendingAIRename) {
@@ -534,7 +929,23 @@ function App() {
                 onUpdateSettings={handleUpdateSettings}
               />
             )}
-            {view === "ai-rename" && <AIRenameView />}
+            {view === "ai-rename" && (
+              <AIRenameView
+                config={effectiveAIRenameConfig}
+                onUpdateConfig={updateAIRenameConfig}
+                onEditBackend={() => setShowApiKeyModal(true)}
+                pendingChunks={renameReviewQueue}
+                onApproveChunk={handleApproveRenameChunk}
+                onRejectChunk={handleRejectRenameChunk}
+                historyState={aiRenameHistoryState}
+                onUndo={handleUndoAIRenameHistory}
+                onRedo={handleRedoAIRenameHistory}
+                statusMessage={aiStatusMessage ?? undefined}
+                isRenaming={isAIRenaming}
+                renameCounts={aiRenameCounts}
+                progress={aiRenameProgress}
+              />
+            )}
           </main>
         </>
       )}
